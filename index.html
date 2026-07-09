@@ -11,6 +11,7 @@
       --shadow:0 20px 50px rgba(0,0,0,.25);
     }
     * { box-sizing:border-box; }
+    html { scroll-behavior:smooth; scroll-padding-top:16px; }
     body { margin:0; background:linear-gradient(135deg,#0b1020 0%,#0f172a 55%,#111827 100%); color:var(--ink); font-family:Inter,Segoe UI,Roboto,Helvetica,Arial,sans-serif; line-height:1.45; }
     header { border-bottom:1px solid var(--line); background:rgba(15,23,42,.92); backdrop-filter:blur(14px); }
     .wrap { max-width:1180px; margin:0 auto; padding:22px; }
@@ -25,7 +26,7 @@
     p { margin:0; color:var(--muted); }
     main { max-width:1180px; margin:0 auto; padding:22px; display:grid; gap:16px; }
     .grid { display:grid; grid-template-columns:1fr 1fr; gap:16px; align-items:start; }
-    .grid.detectors { grid-template-columns:repeat(3,minmax(0,1fr)); }
+    .grid.detectors { grid-template-columns:repeat(auto-fit,minmax(250px,1fr)); }
     .card { background:rgba(17,24,39,.94); border:1px solid var(--line); border-radius:14px; box-shadow:var(--shadow); overflow:hidden; }
     .cardHead { padding:16px 18px; border-bottom:1px solid var(--line); }
     .cardHead h2 { margin:0; font-size:20px; }
@@ -37,6 +38,10 @@
     input::placeholder, textarea::placeholder { color:#64748b; }
     .toolbar,.split { display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
     .toolbar { margin-top:14px; }
+    .jumpNav { background:rgba(17,24,39,.94); border:1px solid var(--line); border-radius:14px; box-shadow:var(--shadow); padding:12px; display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
+    .jumpNav .jumpLabel { color:#cbd5e1; font-size:12px; font-weight:850; letter-spacing:.08em; text-transform:uppercase; margin-right:4px; }
+    .jumpNav a { color:var(--ink); text-decoration:none; border:1px solid #334155; background:#0b1020; border-radius:999px; padding:8px 11px; font-size:13px; font-weight:750; }
+    .jumpNav a:hover, .jumpNav a:focus { border-color:#38bdf8; color:#bae6fd; outline:none; }
     button { border:1px solid #334155; background:#172033; color:var(--ink); padding:10px 13px; border-radius:11px; font-weight:700; cursor:pointer; min-height:42px; }
     button:hover { border-color:#64748b; transform:translateY(-1px); }
     .primary { background:linear-gradient(135deg,#0284c7,#2563eb); border-color:#38bdf8; color:white; }
@@ -46,6 +51,8 @@
     .detectBox.warn { border-left:5px solid var(--warn); }
     .detectBox.bad { border-left:5px solid var(--bad); }
     .detectBox.info { border-left:5px solid var(--brand); }
+    .propsBox { display:grid; gap:8px; background:#0b1020; border:1px solid var(--line); border-left:5px solid #93c5fd; border-radius:13px; padding:12px; }
+    .propsBox pre { margin:0; overflow:auto; background:#080d1a; border:1px solid #334155; border-radius:10px; padding:10px; color:#bae6fd; font:13px/1.45 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; }
     .detectTitle { font-weight:850; color:#e2e8f0; }
     .detectMeta { display:flex; gap:7px; flex-wrap:wrap; }
     code { background:#080d1a; border:1px solid #334155; border-radius:8px; padding:2px 6px; color:#bae6fd; white-space:normal; overflow-wrap:anywhere; }
@@ -72,6 +79,9 @@
       .logo svg { width:38px; height:38px; }
       .grid,.grid.detectors,.columns { grid-template-columns:1fr; }
       textarea { min-height:180px; }
+      .jumpNav { padding:10px; gap:7px; overflow-x:auto; flex-wrap:nowrap; -webkit-overflow-scrolling:touch; }
+      .jumpNav .jumpLabel { flex:0 0 auto; }
+      .jumpNav a { flex:0 0 auto; white-space:nowrap; padding:8px 10px; }
       .split button { flex:1 1 130px; }
       .detectMeta { display:grid; gap:6px; }
     }
@@ -94,7 +104,7 @@
             <h1>LENS</h1>
             <span class="tagline">Log Event Normalisation Scanner</span>
           </div>
-          <p class="subtitle">Detect log format, timestamp format, username format, parsing risk, and Splunk extraction hints from raw event samples.</p>
+          <p class="subtitle">Detect log format, timestamp format, username format, line breaks, parsing risk, and Splunk extraction hints from raw event samples.</p>
         </div>
       </div>
       <div class="toolbar">
@@ -106,8 +116,19 @@
   </header>
 
   <main>
+    <nav class="jumpNav" aria-label="LENS section navigation">
+      <span class="jumpLabel">Jump to</span>
+      <a href="#log-format-detector">Log format</a>
+      <a href="#timestamp-detector">Timestamp</a>
+      <a href="#username-detector">Username</a>
+      <a href="#line-break-detector">Line breaks</a>
+      <a href="#reverseTimeFormatCard">Reverse TIME_FORMAT</a>
+      <a href="#raw-findings">Raw findings</a>
+      <a href="#timestamp-reference">Timestamp reference</a>
+      <a href="#username-reference">Username reference</a>
+    </nav>
     <section class="grid detectors">
-      <div class="card">
+      <div class="card" id="log-format-detector">
         <div class="cardHead">
           <h2>Log Format Detector</h2>
           <p>Analyses the first event, classifies common SIEM log formats, and extracts likely field names.</p>
@@ -128,7 +149,7 @@
         </div>
       </div>
 
-      <div class="card">
+      <div class="card" id="timestamp-detector">
         <div class="cardHead">
           <h2>Timestamp Detector</h2>
           <p>Detects standalone timestamp values using the expanded datetime format list.</p>
@@ -136,7 +157,7 @@
         <div class="cardBody">
           <div>
             <label for="sampleDateTime">Sample timestamp</label>
-            <input id="sampleDateTime" placeholder="2026-07-09T14:30:45.123+10:00">
+            <input id="sampleDateTime" placeholder="timestamp=2026-07-09T14:30:45.123+10:00">
           </div>
           <div class="split">
             <button class="primary" id="detectTimestampBtn" type="button">Detect timestamp</button>
@@ -146,10 +167,17 @@
             <div class="detectTitle">No timestamp detected yet</div>
             <div class="detectNotes">Paste one timestamp and select Detect timestamp.</div>
           </div>
+          <div id="propsConfSuggestion" class="propsBox">
+            <div class="detectTitle">props.conf suggestion</div>
+            <div class="detectNotes">Detect a timestamp to generate the three timestamp parsing settings.</div>
+            <pre>MAX_TIMESTAMP_LOOKAHEAD =
+TIME_FORMAT =
+TIME_PREFIX =</pre>
+          </div>
         </div>
       </div>
 
-      <div class="card">
+      <div class="card" id="username-detector">
         <div class="cardHead">
           <h2>Username Detector</h2>
           <p>Detects account identifiers such as UPN, email, SID, ARN, SAML NameID URNs, down-level logon names, and cloud principals.</p>
@@ -169,9 +197,60 @@
           </div>
         </div>
       </div>
+
+      <div class="card" id="line-break-detector">
+        <div class="cardHead">
+          <h2>Line Break Detector</h2>
+          <p>Detects event boundaries and suggests conservative Splunk event-breaking settings.</p>
+        </div>
+        <div class="cardBody">
+          <div>
+            <label for="sampleLineBreak">Sample events</label>
+            <textarea id="sampleLineBreak" placeholder="2026-07-09T14:30:45.123Z user=jsmith action=login
+    at auth.validate(auth.js:42)
+2026-07-09T14:31:02.901Z user=jsmith action=logout"></textarea>
+          </div>
+          <div class="split">
+            <button class="primary" id="detectLineBreakBtn" type="button">Detect line breaks</button>
+            <button class="ghost" id="clearLineBreakBtn" type="button">Clear</button>
+          </div>
+          <div id="lineBreakResult" class="detectBox info">
+            <div class="detectTitle">No line break detected yet</div>
+            <div class="detectNotes">Paste one or more events and select Detect line breaks.</div>
+          </div>
+          <div id="lineBreakPropsSuggestion" class="propsBox">
+            <div class="detectTitle">props.conf line breaking suggestion</div>
+            <div class="detectNotes">Detect line breaks to generate event boundary settings.</div>
+            <pre>SHOULD_LINEMERGE =
+LINE_BREAKER =</pre>
+          </div>
+        </div>
+      </div>
     </section>
 
-    <section class="grid detectors">
+    <section class="card" id="reverseTimeFormatCard">
+      <div class="cardHead">
+        <h2>Splunk TIME_FORMAT Reverse Lookup</h2>
+        <p>Paste a Splunk datetime format string to identify the likely datetime standard, matching reference rows, expected example value, and parsing notes.</p>
+      </div>
+      <div class="cardBody">
+        <div>
+          <label for="sampleSplunkTimeFormat">Splunk datetime format string</label>
+          <input id="sampleSplunkTimeFormat" placeholder="%Y-%m-%dT%H:%M:%S.%Q%:z">
+        </div>
+        <div class="split">
+          <button class="primary" id="reverseTimeFormatBtn" type="button">Lookup TIME_FORMAT</button>
+          <button class="ghost" id="clearReverseTimeFormatBtn" type="button">Clear</button>
+        </div>
+        <div id="reverseTimeFormatResult" class="detectBox info">
+          <div class="detectTitle">No Splunk TIME_FORMAT analysed yet</div>
+          <div class="detectNotes">Paste a format string such as <strong>%Y-%m-%dT%H:%M:%S.%QZ</strong> and select Lookup TIME_FORMAT.</div>
+        </div>
+        <div id="reverseTimeFormatMatches" class="list"></div>
+      </div>
+    </section>
+
+    <section class="grid detectors" id="raw-findings">
       <div class="card">
         <div class="cardHead">
           <h2>Raw Event Timestamp Findings</h2>
@@ -218,9 +297,22 @@
           </div>
         </div>
       </div>
+
+      <div class="card">
+        <div class="cardHead">
+          <h2>Raw Event Line Break Findings</h2>
+          <p>Event boundary analysis from the raw event sample.</p>
+        </div>
+        <div class="cardBody">
+          <div id="rawLineBreakResult" class="detectBox info">
+            <div class="detectTitle">No raw event analysed yet</div>
+            <div class="detectNotes">The raw event detector will summarise line break structure here.</div>
+          </div>
+        </div>
+      </div>
     </section>
 
-    <details>
+    <details id="timestamp-reference">
       <summary>Timestamp reference formats (<span id="formatCount">0</span>)</summary>
       <div class="tableWrap">
         <table id="timeRefTable">
@@ -230,7 +322,7 @@
       </div>
     </details>
 
-    <details>
+    <details id="username-reference">
       <summary>Username reference formats (<span id="usernameFormatCount">0</span>)</summary>
       <div class="tableWrap">
         <table id="usernameRefTable">
@@ -1406,6 +1498,239 @@
     const $$ = (sel, root=document) => Array.from(root.querySelectorAll(sel));
     const esc = value => String(value ?? '').replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
 
+    function stripTimeFormatComment(formatText) {
+      let text = String(formatText || '').trim();
+      if(!text) return '';
+      text = text.replace(/\s*\(([^)]*)\)\s*$/g, (match, inner) => /^%[:A-Za-z0-9-]+$/.test(String(inner || '').trim()) ? match.trimEnd() : '');
+      if(/^%/.test(text) && /\s+-\s+/.test(text)) text = text.split(/\s+-\s+/)[0].trim();
+      if(/^%/.test(text) && /\s+\+\s+ms$/i.test(text)) text = text.replace(/\s+\+\s+ms$/i, '%Q');
+      return text.trim();
+    }
+
+    function normaliseTimeFormat(formatText) {
+      return stripTimeFormatComment(formatText)
+        .replace(/\s+/g, ' ')
+        .replace(/%3N|%6N|%9N/g, '%Q')
+        .replace(/%N/g, '%Q')
+        .trim();
+    }
+
+    function timeFormatAlternates(formatText) {
+      const raw = String(formatText || '').trim();
+      const values = new Set();
+      const add = v => { if(v) values.add(normaliseTimeFormat(v)); };
+      add(raw);
+      add(stripTimeFormatComment(raw));
+      if(raw.includes('%f')) add(raw.replace(/%f/g, '%Q'));
+      if(raw.includes('%Q')) add(raw.replace(/%Q/g, '%3N'));
+      if(raw.includes('%N')) add(raw.replace(/%N/g, '%Q'));
+      if(raw.includes('%z')) add(raw.replace(/%z/g, '%:z'));
+      if(raw.includes('%:z')) add(raw.replace(/%:z/g, '%z'));
+      if(raw.includes('%3N')) add(raw.replace(/%3N/g, '%Q'));
+      if(raw.includes('%6N')) add(raw.replace(/%6N/g, '%Q'));
+      if(raw.includes('%9N')) add(raw.replace(/%9N/g, '%Q'));
+      return Array.from(values).filter(Boolean);
+    }
+
+    function findTimeFormatReferenceMatches(formatText) {
+      const inputAlts = timeFormatAlternates(formatText);
+      const inputSet = new Set(inputAlts);
+      const exact = [];
+      const compatible = [];
+      TIME_FORMATS.forEach(row => {
+        const rowAlts = timeFormatAlternates(row[2]);
+        if(rowAlts.some(v => inputSet.has(v))) exact.push(row);
+        else if(rowAlts.some(v => inputAlts.some(i => v === i || v.replace(/Z$/, '%z') === i || i.replace(/Z$/, '%z') === v))) compatible.push(row);
+      });
+      return {exact, compatible};
+    }
+
+    function exampleFromSplunkTimeFormat(formatText) {
+      let out = stripTimeFormatComment(formatText);
+      if(!out || /custom|conversion|required|RFC 3339|micros|epoch|since/i.test(out)) return '';
+      const literals = [];
+      out = out.replace(/%%/g, () => {
+        literals.push('%');
+        return `__LIT${literals.length - 1}__`;
+      });
+      const replacements = [
+        ['%:z','+10:00'], ['%3N','123'], ['%6N','123456'], ['%9N','123456789'], ['%Q','123'], ['%N','123'], ['%f','123456'],
+        ['%Y','2026'], ['%G','2026'], ['%y','26'], ['%m','07'], ['%B','July'], ['%b','Jul'], ['%d','09'], ['%e',' 9'], ['%-d','9'], ['%j','190'],
+        ['%V','28'], ['%u','4'], ['%A','Thursday'], ['%a','Thu'], ['%H','14'], ['%I','02'], ['%-I','2'], ['%M','30'], ['%S','45'],
+        ['%p','PM'], ['%z','+1000'], ['%Z','UTC'], ['%s','1773040800']
+      ];
+      replacements.forEach(([token,value]) => { out = out.split(token).join(value); });
+      out = out.replace(/__LIT(\d+)__/g, (_,i) => literals[Number(i)] || '%');
+      return out;
+    }
+
+    function analyseTimeFormatTokens(formatText) {
+      const fmt = stripTimeFormatComment(formatText);
+      const norm = normaliseTimeFormat(fmt);
+      const has = token => norm.includes(token);
+      const hasYear = /%Y|%y|%G/.test(norm);
+      const hasDate = hasYear && /%m|%b|%B|%j|%V/.test(norm) && /%d|%e|%j|%u/.test(norm);
+      const hasTime = /%H|%I/.test(norm) && has('%M') && has('%S');
+      const hasFraction = /%Q|%N|%3N|%6N|%9N|%f/.test(fmt);
+      const hasOffset = /%:z|%z/.test(norm);
+      const hasZoneToken = has('%Z');
+      const hasLiteralZoneText = /\b(?:GMT|UTC)\b/.test(norm);
+      const hasLiteralZ = /(^|[^%])Z($|[^A-Za-z])/.test(norm);
+      const hasZoneName = hasZoneToken || hasLiteralZoneText;
+      const hasTimezone = hasOffset || hasZoneToken || hasLiteralZoneText || hasLiteralZ || has('%s');
+      let precision = hasFraction ? 'Sub-second / millisecond capable' : has('%s') ? 'Seconds unless combined with fractional token' : hasTime ? 'Seconds only' : 'No full time component';
+      if(/%3N/.test(fmt)) precision = 'Milliseconds (%3N)';
+      if(/%6N|%f/.test(fmt)) precision = 'Microseconds';
+      if(/%9N/.test(fmt)) precision = 'Nanoseconds';
+      if(/%Q/.test(fmt)) precision = 'Fractional seconds using Splunk %Q';
+      let timezone = hasOffset ? 'Numeric UTC offset' : hasZoneToken ? 'Timezone name / abbreviation' : (hasLiteralZ || hasLiteralZoneText) ? 'UTC literal Z / GMT / UTC' : has('%s') ? 'Epoch is UTC-based' : 'No timezone in format';
+      let risk = 'Medium';
+      const notes = [];
+      if(!hasDate && !has('%s')) notes.push('No complete calendar date was identified.');
+      if(!hasTime && !has('%s')) notes.push('No complete time-of-day was identified.');
+      if(!hasTimezone) notes.push('No timezone or UTC offset token is present; document source timezone or set TZ handling separately.');
+      if(has('%Z')) notes.push('Timezone abbreviations such as AEST, PST, or CET can be ambiguous; numeric offsets are safer.');
+      if(!hasFraction) notes.push('No fractional-second token is present, so the format is likely seconds precision only.');
+      if(hasDate && hasTime && hasTimezone && hasFraction) risk = has('%Z') && !hasOffset ? 'Medium' : 'Low';
+      if(!hasDate || !hasTime || !hasTimezone) risk = 'High';
+      if(has('%s')) risk = hasFraction ? 'Low' : 'Medium';
+      return {fmt, norm, hasDate, hasTime, hasFraction, hasOffset, hasZoneName, hasLiteralZ, hasTimezone, precision, timezone, risk, notes};
+    }
+
+    function classifySplunkTimeFormat(formatText, matches) {
+      const info = analyseTimeFormatTokens(formatText);
+      const norm = info.norm;
+      let standard = 'Custom / vendor-specific datetime format';
+      let category = 'Custom parser / source-specific';
+      let description = 'No exact reference pattern matched. The result is inferred from the tokens in the Splunk TIME_FORMAT string.';
+      if(matches.exact.length) {
+        const best = bestTimeFormatReference(matches.exact);
+        standard = best[0];
+        category = 'Exact reference match';
+        description = best[3] || 'Matched the timestamp reference table.';
+      } else if(/^%Y-%m-%dT%H:%M:%S(?:\.%Q)?(?:Z|%z|%:z)$/.test(norm)) {
+        standard = 'ISO 8601 / RFC 3339';
+        category = 'Inferred standard';
+        description = 'Calendar date, T separator, time-of-day, and UTC/offset token align with ISO 8601 / RFC 3339 style timestamps.';
+      } else if(/^%Y%m%dT%H%M%S(?:\.%Q)?(?:Z|%z|%:z)$/.test(norm)) {
+        standard = 'ISO 8601 Basic / compact';
+        category = 'Inferred standard';
+        description = 'Compact ISO-style timestamp without date and time delimiters.';
+      } else if(/^%a, %d %b %Y %H:%M:%S (?:%z|GMT|UTC)$/.test(norm) || /^%a, %d %b %y %H:%M:%S %z$/.test(norm)) {
+        standard = 'RFC 5322 / RFC 2822 / RFC 822 internet message date';
+        category = 'Inferred standard';
+        description = 'Weekday, day, month name, year, time, and offset are typical internet message date components.';
+      } else if(/^%b %e?\s*%H:%M:%S$/.test(norm) || /^%b %d %H:%M:%S(?:\.%Q)?$/.test(norm)) {
+        standard = 'RFC 3164 / BSD syslog-style timestamp';
+        category = 'Inferred standard';
+        description = 'Month name, day, and time without year or timezone matches legacy syslog-style timestamps.';
+      } else if(/^%d\/%b\/%Y:%H:%M:%S(?:\.%Q)?(?: %z)?$/.test(norm)) {
+        standard = 'Apache / Nginx Common Log Format style';
+        category = 'Inferred standard';
+        description = 'Day/month/year with colon-separated time is typical of web server access logs.';
+      } else if(norm === '%s' || norm === '%s%Q' || norm === '%s.%Q') {
+        standard = 'Unix epoch';
+        category = 'Inferred standard';
+        description = 'Epoch seconds with optional fractional or millisecond component.';
+      } else if(/^%Y-%m-%d %H:%M:%S(?:\.%Q)?(?: ?%z| ?%:z)?$/.test(norm)) {
+        standard = info.hasTimezone ? 'RFC 3339 / SQL timestamp with offset' : 'SQL / W3C / local timestamp without timezone';
+        category = 'Inferred standard';
+        description = info.hasTimezone ? 'Space-separated date/time with explicit offset.' : 'Space-separated date/time without timezone. Common in SQL, W3C, IIS, and application logs.';
+      } else if(/^%m\/%d\/%Y %I:%M:%S %p$/.test(norm)) {
+        standard = 'US locale 12-hour timestamp';
+        category = 'Inferred locale format';
+        description = 'US month/day/year ordering with 12-hour clock and AM/PM.';
+      } else if(/^%d\/%m\/%Y %H:%M:%S$/.test(norm)) {
+        standard = 'European / DMY locale timestamp';
+        category = 'Inferred locale format';
+        description = 'Day/month/year ordering with 24-hour time and no timezone.';
+      } else if(/^%Y%m%d%H%M%S(?:%Q)?$/.test(norm)) {
+        standard = 'Compact sortable timestamp';
+        category = 'Inferred compact format';
+        description = 'Sortable numeric timestamp using year, month, day, hour, minute, and second.';
+      }
+      const cls = info.risk === 'Low' ? 'good' : info.risk === 'Medium' ? 'warn' : 'bad';
+      const confidence = matches.exact.length ? 'High' : matches.compatible.length ? 'Medium' : (category.startsWith('Inferred') ? 'Medium' : 'Low');
+      return {standard, category, description, cls, confidence, info};
+    }
+
+    function bestTimeFormatReference(rows) {
+      const score = row => {
+        const name = String(row?.[0] || '');
+        if(/^ISO 8601 \/ RFC 3339/i.test(name)) return 0;
+        if(/^ISO 8601/i.test(name)) return 1;
+        if(/^Internet message \/ RFC/i.test(name)) return 1;
+        if(/^Unix epoch/i.test(name)) return 1;
+        if(/^Syslog/i.test(name)) return 2;
+        if(/^Web server/i.test(name)) return 3;
+        if(/^Compact/i.test(name)) return 3;
+        if(/^Database/i.test(name)) return 4;
+        if(/^Human-readable/i.test(name)) return 5;
+        if(/^Language \/ framework/i.test(name)) return 6;
+        if(/^Vendor/i.test(name)) return 7;
+        return 8;
+      };
+      return [...(rows || [])].sort((a,b) => score(a) - score(b))[0];
+    }
+
+    function reverseLookupTimeFormat(formatText) {
+      const raw = String(formatText || '').trim();
+      if(!raw) return null;
+      const matches = findTimeFormatReferenceMatches(raw);
+      const classification = classifySplunkTimeFormat(raw, matches);
+      const bestExact = bestTimeFormatReference(matches.exact);
+      const bestCompatible = bestTimeFormatReference(matches.compatible);
+      const example = bestExact?.[1] || bestCompatible?.[1] || exampleFromSplunkTimeFormat(raw) || 'Example generation unavailable';
+      const validation = bestExact?.[4] || (classification.info.notes.length ? classification.info.notes.join(' ') : 'Validate against representative sample events before production use.');
+      return { input: raw, example, matches, ...classification, validation };
+    }
+
+    function renderReverseTimeFormatResult(result) {
+      const box = $('#reverseTimeFormatResult');
+      const list = $('#reverseTimeFormatMatches');
+      if(!result) {
+        renderDetection(box, null, 'No Splunk TIME_FORMAT analysed yet', 'Paste a format string such as %Y-%m-%dT%H:%M:%S.%QZ and select Lookup TIME_FORMAT.');
+        if(list) list.innerHTML = '';
+        return;
+      }
+      renderDetection(box, {
+        cls: result.cls,
+        title: result.standard,
+        confidence: result.confidence + ' confidence',
+        meta: [
+          ['Value', result.input],
+          ['Category', result.category],
+          ['Example', result.example],
+          ['Precision', result.info.precision],
+          ['Timezone', result.info.timezone],
+          ['Risk', result.info.risk]
+        ],
+        description: result.description,
+        notes: `Validation: ${result.validation}`
+      }, '', '');
+      if(list) {
+        const exactRows = result.matches.exact.slice(0,8);
+        const compatibleRows = result.matches.compatible.slice(0,8);
+        const sections = [];
+        if(exactRows.length) {
+          sections.push(`<div class="item"><strong>Exact reference matches (${exactRows.length})</strong>${exactRows.map(row => `<div class="small"><code>${esc(row[2])}</code> - ${esc(row[0])} - example <code>${esc(row[1])}</code></div>`).join('')}</div>`);
+        }
+        if(!exactRows.length && compatibleRows.length) {
+          sections.push(`<div class="item"><strong>Compatible reference matches (${compatibleRows.length})</strong>${compatibleRows.map(row => `<div class="small"><code>${esc(row[2])}</code> - ${esc(row[0])} - example <code>${esc(row[1])}</code></div>`).join('')}</div>`);
+        }
+        if(!sections.length) {
+          sections.push('<div class="item small">No exact reference row matched. The standard was inferred from the TIME_FORMAT tokens.</div>');
+        }
+        list.innerHTML = sections.join('');
+      }
+    }
+
+    function detectReverseTimeFormat() {
+      const value = $('#sampleSplunkTimeFormat')?.value.trim() || '';
+      if(!value) { alert('Paste a Splunk TIME_FORMAT string first.'); return; }
+      renderReverseTimeFormatResult(reverseLookupTimeFormat(value));
+    }
+
     function renderDetection(box, data, emptyTitle, emptyNote) {
       if(!data) {
         box.className = 'detectBox info';
@@ -1453,6 +1778,262 @@
         description: detection.description || '',
         notes: `UTC status: ${detection.utcStatus}. Normalisation: ${detection.normalisation}.${detection.notes?.length ? ' ' + detection.notes.join(' ') : ''}`
       } : null, 'No timestamp detected yet', 'Paste one timestamp and select Detect timestamp.');
+    }
+
+    function renderPropsConfSuggestion(detection) {
+      const box = $('#propsConfSuggestion');
+      if(!box) return;
+      if(!detection || !detection.input) {
+        box.innerHTML = `<div class="detectTitle">props.conf suggestion</div>
+          <div class="detectNotes">Detect a timestamp to generate the three timestamp parsing settings.</div>
+          <pre>MAX_TIMESTAMP_LOOKAHEAD =
+TIME_FORMAT =
+TIME_PREFIX =</pre>`;
+        return;
+      }
+      const sample = String(detection.input || '').trim();
+      const maxLookahead = sample.length;
+      const timeFormat = detection.timeFormat || '';
+      const timePrefix = detection.timePrefix || '';
+      box.innerHTML = `<div class="detectTitle">props.conf suggestion</div>
+        <pre>MAX_TIMESTAMP_LOOKAHEAD = ${esc(maxLookahead)}
+TIME_FORMAT = ${esc(timeFormat)}
+TIME_PREFIX = ${esc(timePrefix)}</pre>`;
+    }
+
+    function renderLineBreakPropsSuggestion(detection) {
+      const box = $('#lineBreakPropsSuggestion');
+      if(!box) return;
+      if(!detection) {
+        box.innerHTML = `<div class="detectTitle">props.conf line breaking suggestion</div>
+          <div class="detectNotes">Detect line breaks to generate event boundary settings.</div>
+          <pre>SHOULD_LINEMERGE =
+LINE_BREAKER =</pre>`;
+        return;
+      }
+      box.innerHTML = `<div class="detectTitle">props.conf line breaking suggestion</div>
+        <pre>SHOULD_LINEMERGE = ${esc(detection.shouldLineMerge || '')}
+LINE_BREAKER = ${esc(detection.lineBreaker || '')}</pre>`;
+    }
+
+    function detectTimestampInput(value) {
+      const raw = String(value || '').trim();
+      if(!raw) return null;
+      const direct = detectDateTimeFormat(raw);
+      if(direct && direct.formatName !== 'Unknown or unsupported timestamp format') {
+        return {...direct, originalInput: raw, timePrefix: ''};
+      }
+      const candidates = findTimestampCandidates(raw, {});
+      if(!candidates.length) return direct;
+      const preferred = candidates
+        .map(c => ({...c, index: raw.indexOf(c.value)}))
+        .filter(c => c.index >= 0)
+        .sort((a,b) => a.index - b.index)[0] || candidates[0];
+      const prefixIndex = raw.indexOf(preferred.value);
+      const timePrefix = prefixIndex >= 0 ? raw.slice(0, prefixIndex) : '';
+      return {
+        ...preferred.detection,
+        input: preferred.value,
+        example: preferred.value,
+        originalInput: raw,
+        timePrefix
+      };
+    }
+
+    function escapeLineBreakerLiteral(value) {
+      return String(value || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/\s+/g, '\\s*');
+    }
+
+    function timestampLineStartInfo(line) {
+      const trimmed = String(line || '').trimStart();
+      if(!trimmed) return null;
+      const candidates = findTimestampCandidates(trimmed, {});
+      const usable = candidates.map(c => ({...c, index: trimmed.indexOf(c.value)}))
+        .filter(c => {
+          if(c.index < 0 || c.index > 40) return false;
+          const before = trimmed.slice(0, c.index);
+          return before === '' || /^[A-Za-z_][\w.-]{0,40}\s*[:=]\s*["']?$/.test(before) || /^[\["']$/.test(before);
+        })
+        .sort((a,b) => a.index - b.index)[0];
+      if(!usable) return null;
+      const prefix = trimmed.slice(0, usable.index);
+      return {prefix, value:usable.value, detection:usable.detection};
+    }
+
+    function lineBreakerForTimestamp(info) {
+      const name = String(info?.detection?.formatName || '');
+      const prefix = info?.prefix || '';
+      if(prefix) {
+        return `([\\r\\n]+)(?=\\s*${escapeLineBreakerLiteral(prefix)})`;
+      }
+      if(/RFC 3164|systemd journal|systemd \(short|asctime|Python asctime/i.test(name)) {
+        return '([\\r\\n]+)(?=\\s*[A-Z][a-z]{2}\\s+\\d{1,2}\\s+\\d{2}:\\d{2}:\\d{2})';
+      }
+      if(/Apache Common|Nginx access|HAProxy/i.test(name)) {
+        return '([\\r\\n]+)(?=\\s*\\d{1,2}/[A-Z][a-z]{2}/\\d{4}:\\d{2}:\\d{2}:\\d{2})';
+      }
+      if(/RFC 5322|RFC 1123|RFC 822|RFC 850|JavaScript toUTCString|RFC-ish/i.test(name)) {
+        return '([\\r\\n]+)(?=\\s*[A-Z][a-z]{2},?\\s+)';
+      }
+      if(/Unix epoch/.test(name)) {
+        return '([\\r\\n]+)(?=\\s*\\d{10,19}(?:\\.\\d+)?)';
+      }
+      if(/Compact/.test(name)) {
+        return '([\\r\\n]+)(?=\\s*\\d{8,17})';
+      }
+      return '([\\r\\n]+)(?=\\s*\\d{4}[-/]\\d{2}[-/]\\d{2})';
+    }
+
+    function detectLineBreakFormat(value) {
+      const raw = String(value || '').replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+      if(!raw.trim()) return null;
+      const lines = raw.split('\n');
+      const nonEmpty = lines.map((text, index) => ({text, index})).filter(row => row.text.trim());
+      const blankLines = lines.length - nonEmpty.length;
+      const stackContinuations = nonEmpty.filter(row => /^\s+(?:at\s|File\s"|\.{3}|\w+Error:|Caused by:)/.test(row.text) || /^\s*(?:at\s|Caused by:|Traceback\b)/.test(row.text)).length;
+      const make = data => ({
+        shouldLineMerge:'false',
+        lineCount:lines.length,
+        nonEmptyLines:nonEmpty.length,
+        blankLines,
+        stackContinuations,
+        ...data
+      });
+      if(lines.length <= 1) {
+        return make({
+          formatName:'Single-line event sample',
+          cls:'info',
+          confidence:'High',
+          structure:'Single-line',
+          anchor:'No line break observed',
+          lineBreaker:'',
+          description:'The sample contains one physical line, so no event boundary pattern can be proven from the sample.',
+          notes:'Use a larger sample with at least two events if this source can produce multiple records.'
+        });
+      }
+      const jsonLines = nonEmpty.length > 1 && nonEmpty.every(row => {
+        const text = row.text.trim();
+        if(!/^[\[{]/.test(text)) return false;
+        try { JSON.parse(text); return true; } catch(e) { return false; }
+      });
+      if(jsonLines) {
+        return make({
+          formatName:'Newline-delimited JSON',
+          cls:'good',
+          confidence:'High',
+          structure:'One JSON document per line',
+          anchor:'Line starts with JSON object or array',
+          lineBreaker:'([\\r\\n]+)(?=\\s*[\\{\\[])',
+          description:'Each non-empty line parses as its own JSON payload.',
+          notes:'This is a strong fit for event breaking before each JSON payload.'
+        });
+      }
+      const timestampStarts = nonEmpty.map(row => ({...row, ts:timestampLineStartInfo(row.text)})).filter(row => row.ts);
+      if(timestampStarts.length >= 2) {
+        const continuationLines = nonEmpty.length - timestampStarts.length;
+        const info = timestampStarts[0].ts;
+        return make({
+          formatName: continuationLines ? 'Timestamp-started multiline events' : 'Timestamp-started line events',
+          cls: continuationLines ? 'warn' : 'good',
+          confidence: timestampStarts.length / nonEmpty.length >= 0.5 ? 'High' : 'Medium',
+          structure: continuationLines ? 'Multiline events with timestamp anchors' : 'One event per timestamp-started line',
+          anchor: info.prefix ? `Prefix plus timestamp: ${info.prefix}` : `Timestamp: ${info.detection.formatName}`,
+          lineBreaker: lineBreakerForTimestamp(info),
+          eventStartLines: timestampStarts.length,
+          continuationLines,
+          description: continuationLines ? 'Some lines appear to continue the previous event, so the timestamp at the start of a later line is the likely next-event boundary.' : 'Most event boundaries appear to start with a timestamp.',
+          notes: stackContinuations ? 'Stack-trace style continuation lines were detected.' : ''
+        });
+      }
+      if(nonEmpty.filter(row => /^<\d+>/.test(row.text.trim())).length >= 2) {
+        return make({
+          formatName:'Syslog priority-started events',
+          cls:'good',
+          confidence:'High',
+          structure:'Syslog-like line events',
+          anchor:'Line starts with syslog priority',
+          lineBreaker:'([\\r\\n]+)(?=<\\d+>)',
+          description:'Multiple lines start with a syslog priority marker.',
+          notes:'This covers RFC 3164 and RFC 5424 style messages that retain the PRI prefix.'
+        });
+      }
+      if(nonEmpty.filter(row => /^(?:CEF|LEEF):/.test(row.text.trim())).length >= 2) {
+        return make({
+          formatName:'CEF/LEEF line events',
+          cls:'good',
+          confidence:'High',
+          structure:'One CEF/LEEF event per line',
+          anchor:'Line starts with CEF: or LEEF:',
+          lineBreaker:'([\\r\\n]+)(?=(?:CEF|LEEF):)',
+          description:'Multiple lines start with a common SIEM event header.',
+          notes:'If the product prefixes CEF/LEEF with syslog, prefer the syslog or timestamp anchor.'
+        });
+      }
+      const xmlStarts = nonEmpty.filter(row => /^\s*(?:<\?xml|<[A-Za-z][\w:.-]*(?:\s|>))/.test(row.text)).length;
+      if(xmlStarts >= 2) {
+        return make({
+          formatName:'XML-ish event starts',
+          cls:'warn',
+          confidence:'Medium',
+          structure:'XML-like boundaries',
+          anchor:'Line starts with XML declaration or tag',
+          lineBreaker:'([\\r\\n]+)(?=\\s*(?:<\\?xml|<[A-Za-z][\\w:.-]*(?:\\s|>)))',
+          description:'Multiple lines look like the start of XML fragments or documents.',
+          notes:'Confirm this does not split inside a multiline XML event.'
+        });
+      }
+      if(/\n\s*\n/.test(raw)) {
+        return make({
+          formatName:'Blank-line-separated events',
+          cls:'warn',
+          confidence:'Medium',
+          structure:'Paragraph-style records',
+          anchor:'One or more blank lines',
+          lineBreaker:'([\\r\\n]+){2,}',
+          description:'The sample contains blank lines that may separate records.',
+          notes:'Use only if blank lines are reliable event separators for this source.'
+        });
+      }
+      if(stackContinuations) {
+        return make({
+          formatName:'Multiline sample without repeated start anchor',
+          cls:'bad',
+          confidence:'Low',
+          structure:'Stack-trace-like continuation',
+          anchor:'No repeatable next-event anchor found',
+          lineBreaker:'',
+          description:'Continuation lines are present, but the sample does not include enough repeated event starts to build a safe line breaker.',
+          notes:'Add at least two complete events so the detector can identify the next-event boundary.'
+        });
+      }
+      return make({
+        formatName:'Newline-delimited records without stable anchor',
+        cls:'warn',
+        confidence:'Medium',
+        structure:'One physical line per possible event',
+        anchor:'Plain newline',
+        lineBreaker:'([\\r\\n]+)',
+        description:'The sample has multiple non-empty lines but no stronger event-start pattern was found.',
+        notes:'This is safe only when each physical line is always a complete event.'
+      });
+    }
+
+    function renderLineBreakResult(target, detection) {
+      renderDetection(target, detection ? {
+        cls:detection.cls,
+        title:detection.formatName,
+        confidence:detection.confidence + ' confidence',
+        meta:[
+          ['Structure', detection.structure],
+          ['Event start anchor', detection.anchor],
+          ['Lines', `${detection.nonEmptyLines} non-empty / ${detection.lineCount} total`],
+          ['Continuation lines', detection.continuationLines ?? detection.stackContinuations ?? 0],
+          ['SHOULD_LINEMERGE', detection.shouldLineMerge],
+          ['LINE_BREAKER', detection.lineBreaker || 'Not enough evidence']
+        ],
+        description:detection.description || '',
+        notes:detection.notes || ''
+      } : null, 'No line break detected yet', 'Paste one or more events and select Detect line breaks.');
     }
 
     function detectUsernameFormat(value) {
@@ -1599,6 +2180,7 @@
         </div>
       `).join('');
       if(!$('#sampleDateTime').value) $('#sampleDateTime').value = preferred.value;
+      renderPropsConfSuggestion(preferred.detection);
     }
 
     function findUsernameCandidates(raw, values={}) {
@@ -1655,6 +2237,13 @@
       if(!$('#sampleUsername').value) $('#sampleUsername').value = preferred.value;
     }
 
+    function renderRawLineBreakFindings(raw) {
+      const detection = detectLineBreakFormat(raw);
+      renderLineBreakResult($('#rawLineBreakResult'), detection);
+      if(!$('#sampleLineBreak').value) $('#sampleLineBreak').value = raw;
+      renderLineBreakPropsSuggestion(detection);
+    }
+
     function analyseRawEvent() {
       const raw = $('#sampleRawEvent').value.trim();
       if(!raw) { alert('Paste a sample raw event first.'); return; }
@@ -1663,12 +2252,15 @@
       renderExtractedFields(result.extracted);
       renderRawTimestampFindings(raw, result.values);
       renderRawUsernameFindings(raw, result.values);
+      renderRawLineBreakFindings(raw);
     }
 
     function detectStandaloneTimestamp() {
       const value = $('#sampleDateTime').value.trim();
       if(!value) { alert('Paste a timestamp first.'); return; }
-      renderTimestampResult($('#timestampResult'), detectDateTimeFormat(value));
+      const detection = detectTimestampInput(value);
+      renderTimestampResult($('#timestampResult'), detection);
+      renderPropsConfSuggestion(detection);
     }
 
     function detectStandaloneUsername() {
@@ -1677,13 +2269,24 @@
       renderUsernameResult($('#usernameResult'), detectUsernameFormat(value));
     }
 
+    function detectStandaloneLineBreak() {
+      const value = $('#sampleLineBreak').value;
+      if(!value.trim()) { alert('Paste sample events first.'); return; }
+      const detection = detectLineBreakFormat(value);
+      renderLineBreakResult($('#lineBreakResult'), detection);
+      renderLineBreakPropsSuggestion(detection);
+    }
+
     function copyResults() {
       const logTitle = $('#logFormatResult .detectTitle')?.innerText || '';
       const tsTitle = $('#timestampResult .detectTitle')?.innerText || '';
       const rawTsTitle = $('#rawTimestampResult .detectTitle')?.innerText || '';
       const usernameTitle = $('#usernameResult .detectTitle')?.innerText || '';
       const rawUsernameTitle = $('#rawUsernameResult .detectTitle')?.innerText || '';
-      const text = `Log format: ${logTitle}\nStandalone timestamp: ${tsTitle}\nStandalone username: ${usernameTitle}\nRaw event timestamp: ${rawTsTitle}\nRaw event username: ${rawUsernameTitle}`;
+      const lineBreakTitle = $('#lineBreakResult .detectTitle')?.innerText || '';
+      const reverseTimeFormatTitle = $('#reverseTimeFormatResult .detectTitle')?.innerText || '';
+      const rawLineBreakTitle = $('#rawLineBreakResult .detectTitle')?.innerText || '';
+      const text = `Log format: ${logTitle}\nStandalone timestamp: ${tsTitle}\nSplunk TIME_FORMAT reverse lookup: ${reverseTimeFormatTitle}\nStandalone username: ${usernameTitle}\nStandalone line break: ${lineBreakTitle}\nRaw event timestamp: ${rawTsTitle}\nRaw event username: ${rawUsernameTitle}\nRaw event line break: ${rawLineBreakTitle}`;
       navigator.clipboard?.writeText(text).then(() => alert('Results copied.')).catch(() => alert(text));
     }
 
@@ -1691,11 +2294,18 @@
       $('#sampleRawEvent').value = '';
       $('#sampleDateTime').value = '';
       $('#sampleUsername').value = '';
+      $('#sampleLineBreak').value = '';
+      $('#sampleSplunkTimeFormat').value = '';
       renderDetection($('#logFormatResult'), null, 'No log format detected yet', 'Paste a raw event and select Detect log format.');
       renderDetection($('#timestampResult'), null, 'No timestamp detected yet', 'Paste one timestamp and select Detect timestamp.');
+      renderPropsConfSuggestion(null);
+      renderReverseTimeFormatResult(null);
       renderDetection($('#usernameResult'), null, 'No username detected yet', 'Paste one username, principal, account ID, or SAML NameID Format URN and select Detect username.');
+      renderLineBreakResult($('#lineBreakResult'), null);
+      renderLineBreakPropsSuggestion(null);
       renderDetection($('#rawTimestampResult'), null, 'No raw event analysed yet', 'The raw event detector will list timestamp candidates here.');
       renderDetection($('#rawUsernameResult'), null, 'No raw event analysed yet', 'The raw event detector will list username candidates here.');
+      renderDetection($('#rawLineBreakResult'), null, 'No raw event analysed yet', 'The raw event detector will summarise line break structure here.');
       $('#timestampCandidates').innerHTML = '';
       $('#usernameCandidates').innerHTML = '';
       renderExtractedFields([]);
@@ -1708,12 +2318,15 @@
       $('#usernameFormatCount').textContent = String(USERNAME_FORMATS.length);
       $('#analyzeBtn').addEventListener('click', analyseRawEvent);
       $('#detectTimestampBtn').addEventListener('click', detectStandaloneTimestamp);
+      $('#reverseTimeFormatBtn').addEventListener('click', detectReverseTimeFormat);
       $('#detectUsernameBtn').addEventListener('click', detectStandaloneUsername);
+      $('#detectLineBreakBtn').addEventListener('click', detectStandaloneLineBreak);
       $('#clearRawBtn').addEventListener('click', () => {
         $('#sampleRawEvent').value='';
         renderDetection($('#logFormatResult'), null, 'No log format detected yet', 'Paste a raw event and select Detect log format.');
         renderDetection($('#rawTimestampResult'), null, 'No raw event analysed yet', 'The raw event detector will list timestamp candidates here.');
         renderDetection($('#rawUsernameResult'), null, 'No raw event analysed yet', 'The raw event detector will list username candidates here.');
+        renderDetection($('#rawLineBreakResult'), null, 'No raw event analysed yet', 'The raw event detector will summarise line break structure here.');
         $('#timestampCandidates').innerHTML='';
         $('#usernameCandidates').innerHTML='';
         renderExtractedFields([]);
@@ -1721,18 +2334,34 @@
       $('#clearTimestampBtn').addEventListener('click', () => {
         $('#sampleDateTime').value='';
         renderDetection($('#timestampResult'), null, 'No timestamp detected yet', 'Paste one timestamp and select Detect timestamp.');
+        renderPropsConfSuggestion(null);
+      });
+      $('#clearReverseTimeFormatBtn').addEventListener('click', () => {
+        $('#sampleSplunkTimeFormat').value='';
+        renderReverseTimeFormatResult(null);
       });
       $('#clearUsernameBtn').addEventListener('click', () => {
         $('#sampleUsername').value='';
         renderDetection($('#usernameResult'), null, 'No username detected yet', 'Paste one username, principal, account ID, or SAML NameID Format URN and select Detect username.');
       });
+      $('#clearLineBreakBtn').addEventListener('click', () => {
+        $('#sampleLineBreak').value='';
+        renderLineBreakResult($('#lineBreakResult'), null);
+        renderLineBreakPropsSuggestion(null);
+      });
       $('#copyBtn').addEventListener('click', copyResults);
       $('#resetBtn').addEventListener('click', resetAll);
       $('#loadExampleBtn').addEventListener('click', () => {
-        $('#sampleRawEvent').value = JSON.stringify({timestamp:'2026-07-09T14:30:45.123+10:00', event:{action:'user_login', outcome:'success'}, user:{name:'COMPANY\\jsmith', upn:'jsmith@company.com'}, source:{ip:'10.10.25.14'}, host:{name:'workstation-01'}}, null, 2);
+        $('#sampleRawEvent').value = [
+          'timestamp=2026-07-09T14:30:45.123+10:00 level=error user=COMPANY\\jsmith action=user_login result=failure',
+          '    at auth.validate(auth.js:42)',
+          '    at login.submit(login.js:18)',
+          'timestamp=2026-07-09T14:31:02.901+10:00 level=info user=jsmith@company.com action=user_logout result=success'
+        ].join('\n');
         analyseRawEvent();
       });
       $('#sampleDateTime').addEventListener('keydown', e => { if(e.key === 'Enter') detectStandaloneTimestamp(); });
+      $('#sampleSplunkTimeFormat').addEventListener('keydown', e => { if(e.key === 'Enter') detectReverseTimeFormat(); });
       $('#sampleUsername').addEventListener('keydown', e => { if(e.key === 'Enter') detectStandaloneUsername(); });
     }
     init();
