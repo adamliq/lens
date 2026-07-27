@@ -45,6 +45,8 @@
       <a href="#line-break-detector">Line breaks</a>
       <a href="#reverseTimeFormatCard">Reverse TIME_FORMAT</a>
       <a href="#raw-findings">Raw findings</a>
+      <a href="#batch-consistency">Batch consistency</a>
+      <a href="#regex-tester">Regex tester</a>
       <a href="#timestamp-reference">Timestamp reference</a>
       <a href="#username-reference">Username reference</a>
     </nav>
@@ -62,6 +64,7 @@
           <div class="split">
             <button class="primary" id="analyzeBtn" type="button">Detect log format</button>
             <button class="ghost" id="clearRawBtn" type="button">Clear</button>
+            <button class="ghost" id="downloadPropsBtn" type="button" disabled>Download props.conf</button>
           </div>
           <div id="logFormatResult" aria-live="polite" class="detectBox info">
             <div class="detectTitle">No log format detected yet</div>
@@ -229,6 +232,82 @@ LINE_BREAKER =</pre>
             <div class="detectTitle">No raw event analysed yet</div>
             <div class="detectNotes">The raw event detector will summarise line break structure here.</div>
           </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="cardHead">
+          <h2>Field Extraction &amp; Sourcetype Suggestion</h2>
+          <p>Suggested props.conf/transforms.conf extraction settings and a candidate sourcetype name for the raw sample.</p>
+        </div>
+        <div class="cardBody">
+          <div id="fieldExtractionResult" aria-live="polite" class="detectBox info">
+            <div class="detectTitle">No raw event analysed yet</div>
+            <div class="detectNotes">Analyse a raw event to generate an extraction suggestion.</div>
+          </div>
+          <div id="fieldExtractionProps" aria-live="polite" class="propsBox">
+            <div class="detectTitle">Suggested props.conf lines</div>
+            <div class="detectNotes">Analyse a raw event to generate suggested props.conf lines.</div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="card" id="batch-consistency">
+      <div class="cardHead">
+        <h2>Batch Consistency Check</h2>
+        <p>Paste multiple raw events, one per line, to compare log format, extracted fields, timestamp format, and timezone context across the batch.</p>
+      </div>
+      <div class="cardBody">
+        <div>
+          <label for="batchEventsInput">Sample events (one per line)</label>
+          <textarea id="batchEventsInput" placeholder='{&quot;timestamp&quot;:&quot;2026-07-09T14:30:45.123Z&quot;,&quot;user&quot;:&quot;jsmith&quot;,&quot;action&quot;:&quot;login&quot;}
+{&quot;timestamp&quot;:&quot;2026-07-09T14:31:02.901Z&quot;,&quot;user&quot;:&quot;jsmith&quot;,&quot;action&quot;:&quot;logout&quot;}'></textarea>
+        </div>
+        <div class="split">
+          <button class="primary" id="checkBatchBtn" type="button">Check consistency</button>
+          <button class="ghost" id="clearBatchBtn" type="button">Clear</button>
+        </div>
+        <div id="batchConsistencyResult" aria-live="polite" class="detectBox info">
+          <div class="detectTitle">No batch analysed yet</div>
+          <div class="detectNotes">Paste multiple events, one per line, and select Check consistency.</div>
+        </div>
+        <div id="batchConsistencyDetails" aria-live="polite" class="list"></div>
+      </div>
+    </section>
+
+    <section class="card" id="regex-tester">
+      <div class="cardHead">
+        <h2>Regex Tester</h2>
+        <p>Test an extraction regex against a sample string and inspect matches, capture groups, and named groups.</p>
+      </div>
+      <div class="cardBody">
+        <div class="grid">
+          <div>
+            <label for="regexPattern">Pattern</label>
+            <input id="regexPattern" placeholder="user=(?&lt;user&gt;\w+)">
+          </div>
+          <div>
+            <label for="regexFlags">Flags</label>
+            <input id="regexFlags" placeholder="i (g is always applied)">
+          </div>
+        </div>
+        <div>
+          <label for="regexTestString">Test string</label>
+          <textarea id="regexTestString" placeholder="user=jsmith action=login"></textarea>
+        </div>
+        <div class="split">
+          <button class="primary" id="testRegexBtn" type="button">Test regex</button>
+          <button class="ghost" id="clearRegexBtn" type="button">Clear</button>
+        </div>
+        <div id="regexTestResult" aria-live="polite" class="detectBox info">
+          <div class="detectTitle">No regex tested yet</div>
+          <div class="detectNotes">Enter a pattern and test string and select Test regex.</div>
+        </div>
+        <div id="regexMatches" aria-live="polite" class="list"></div>
+        <div>
+          <label>Highlighted matches</label>
+          <div id="regexHighlighted" aria-live="polite" class="highlightBox"></div>
         </div>
       </div>
     </section>

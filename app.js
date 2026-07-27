@@ -1162,6 +1162,47 @@ const $ = (sel, root=document) => root.querySelector(sel);
 const $$ = (sel, root=document) => Array.from(root.querySelectorAll(sel));
 const esc = value => String(value ?? '').replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
 
+function runRegexTest(pattern, flags, text){
+  const cleanFlags = Array.from(new Set(String(flags || '').replace(/[^a-z]/gi,'').toLowerCase().split(''))).join('');
+  const finalFlags = cleanFlags.includes('g') ? cleanFlags : cleanFlags + 'g';
+  let re;
+  try {
+    re = new RegExp(pattern, finalFlags);
+  } catch(e) {
+    return {valid:false, error:e.message, matches:[], truncated:false};
+  }
+  const input = String(text || '');
+  const MAX_MATCHES = 500;
+  const matches = [];
+  let m, guard = 0;
+  while((m = re.exec(input)) !== null && matches.length < MAX_MATCHES){
+    matches.push({
+      index: m.index,
+      match: m[0],
+      groups: m.slice(1),
+      namedGroups: m.groups ? {...m.groups} : null
+    });
+    if(m[0].length === 0) re.lastIndex++;
+    guard++;
+    if(guard > 5000) break;
+  }
+  return {valid:true, error:null, matches, truncated: matches.length >= MAX_MATCHES};
+}
+
+function buildHighlightedText(text, matches){
+  const str = String(text || '');
+  if(!matches || !matches.length) return esc(str);
+  let out = '', last = 0;
+  for(const m of matches){
+    if(m.index < last) continue;
+    out += esc(str.slice(last, m.index));
+    out += `<mark>${esc(m.match)}</mark>`;
+    last = m.index + m.match.length;
+  }
+  out += esc(str.slice(last));
+  return out;
+}
+
 function stripTimeFormatComment(formatText) {
   let text = String(formatText || '').trim();
   if(!text) return '';
@@ -1820,6 +1861,161 @@ function detectRawFormat(raw) {
   return { detected, extracted, values, parseStatus };
 }
 
+function slug(value){
+  return String(value || '').trim().toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-+|-+$/g,'');
+}
+
+function suggestSourcetypeName(detected, values={}){
+  const vendor = slug(values.deviceVendor || values.vendor || values.Vendor);
+  const product = slug(values.deviceProduct || values.product || values.Product || values.application);
+  if(detected === 'Common Event Format (CEF)') return vendor && product ? `${vendor}:${product}:cef` : 'vendor:product:cef';
+  if(detected === 'Structured JSON') return vendor && product ? `${vendor}:${product}:json` : (product ? `${product}:json` : 'custom:json');
+  if(detected === 'RFC 5424 structured syslog') return vendor ? `${vendor}:syslog` : 'syslog:rfc5424';
+  if(detected === 'RFC 3164 syslog') return vendor ? `${vendor}:syslog` : 'syslog:rfc3164';
+  if(detected === 'Key-value formatted logs') return vendor && product ? `${vendor}:${product}` : 'custom:kv';
+  if(detected === 'Comma-separated values (CSV)') return 'custom:csv';
+  if(detected === 'Tab-separated values (TSV)') return 'custom:tsv';
+  if(detected === 'Windows Event XML') return 'xmlwineventlog';
+  if(detected === 'XML log') return 'custom:xml';
+  if(detected === 'Malformed structured payload') return 'custom:unverified';
+  if(detected === 'Unstructured or unknown') return 'custom:unstructured';
+  return 'custom:unknown';
+}
+
+function suggestFieldExtraction(detected, raw, values={}, extracted=[]){
+  const base = (title, cls, propsConf, notes=[]) => ({title, cls, propsConf, notes});
+
+  if(!detected){
+    return base('Analyse a raw event to generate a suggestion', 'info', '', []);
+  }
+  if(detected === 'Structured JSON'){
+    return base('Structured JSON - no manual extraction required', 'good',
+      'INDEXED_EXTRACTIONS = json\nKV_MODE = none',
+      ['JSON fields are extracted automatically at index time. KV_MODE = none avoids redundant automatic key-value extraction on top of the JSON parser.']);
+  }
+  if(detected === 'Common Event Format (CEF)'){
+    const header = 'EXTRACT-cef_header = ^CEF:(?<cef_version>\\d+)\\|(?<device_vendor>[^|]*)\\|(?<device_product>[^|]*)\\|(?<device_version>[^|]*)\\|(?<signature_id>[^|]*)\\|(?<name>[^|]*)\\|(?<severity>[^|]*)\\|';
+    return base('CEF header extraction + auto KV for extension fields', 'good',
+      `${header}\nKV_MODE = auto`,
+      ['The pipe-delimited CEF header is extracted explicitly; key=value extension fields after the header are handled by KV_MODE = auto. Confirm pipe characters escaped as \\| inside extension values are unescaped correctly downstream.']);
+  }
+  if(detected === 'Key-value formatted logs'){
+    const sampleKey = normKey(extracted[0] || 'user') || 'user';
+    return base('Key-value pairs - automatic KV extraction', 'warn',
+      'KV_MODE = auto',
+      [`KV_MODE = auto covers most key=value pairs, including quoted values. For high-volume sourcetypes, replace it with explicit EXTRACT statements per required field for better search performance, for example: EXTRACT-${sampleKey} = ${sampleKey}=(?<${sampleKey}>"[^"]*"|\\S+)`,
+       'Disable KV_MODE = auto once explicit EXTRACT statements cover every required field, to avoid double extraction.']);
+  }
+  if(detected === 'Comma-separated values (CSV)'){
+    const first = String(raw || '').split(/\r?\n/)[0] || '';
+    const columnCount = Math.max(1, first.split(',').length);
+    const fieldNames = Array.from({length: columnCount}, (_, i) => `field${i+1}`).join(',');
+    return base(`Comma-separated values - ${columnCount} column(s) detected`, 'warn',
+      `INDEXED_EXTRACTIONS = csv\nFIELD_NAMES = ${fieldNames}\nFIELD_DELIMITER = ,`,
+      ['Replace the generated field1..fieldN names with the real column names from the source. Confirm quoted fields containing commas are handled and that the column count is stable across all events for this sourcetype.']);
+  }
+  if(detected === 'Tab-separated values (TSV)'){
+    const first = String(raw || '').split(/\r?\n/)[0] || '';
+    const columnCount = Math.max(1, first.split('\t').length);
+    const fieldNames = Array.from({length: columnCount}, (_, i) => `field${i+1}`).join(',');
+    return base(`Tab-separated values - ${columnCount} column(s) detected`, 'warn',
+      `INDEXED_EXTRACTIONS = csv\nFIELD_NAMES = ${fieldNames}\nFIELD_DELIMITER = \\t`,
+      ['Replace the generated field1..fieldN names with the real column names from the source and confirm the column count is stable across all events.']);
+  }
+  if(detected === 'RFC 5424 structured syslog'){
+    return base('RFC 5424 header extraction', 'good',
+      'EXTRACT-syslog5424_header = ^<(?<pri>\\d+)>(?<syslog_version>\\d+)\\s+(?<syslog_timestamp>\\S+)\\s+(?<hostname>\\S+)\\s+(?<app_name>\\S+)\\s+(?<procid>\\S+)\\s+(?<msgid>\\S+)\\s+',
+      ['Extracts the fixed-position PRI, version, timestamp, host, app, procid, and msgid header fields. Structured-data and the free-text message payload need vendor-specific extraction after the header.']);
+  }
+  if(detected === 'RFC 3164 syslog'){
+    return base('RFC 3164 header extraction', 'warn',
+      'EXTRACT-syslog3164_header = ^<(?<pri>\\d+)>(?<syslog_timestamp>[A-Za-z]{3}\\s+\\d{1,2}\\s+\\d{2}:\\d{2}:\\d{2})\\s+(?<hostname>\\S+)\\s+(?<tag>[\\w./-]+)(?:\\[(?<pid>\\d+)\\])?:\\s*',
+      ['Legacy syslog headers vary by vendor. Verify the tag/pid pattern against real samples and confirm year/timezone inference for the timestamp separately.']);
+  }
+  if(detected === 'Windows Event XML' || detected === 'XML log'){
+    return base('XML - structured field extraction', 'warn',
+      'KV_MODE = xml',
+      ['KV_MODE = xml extracts attributes and element text as fields automatically. For Windows Event XML, confirm EventID, Computer, and EventData/Data name-value pairs are extracted as expected; add explicit EXTRACT/REPORT transforms for anything KV_MODE = xml misses.']);
+  }
+  return base(`${detected} - no built-in extraction template`, 'bad', '',
+    ['Document the field layout from real samples and write explicit EXTRACT/REPORT transforms once the schema is confirmed.']);
+}
+
+function buildPropsConfBundle(state={}){
+  const sourcetype = state.sourcetypeName || 'custom:sourcetype';
+  const lines = [`[${sourcetype}]`];
+  const ts = state.timestampProps || {};
+  if(ts.maxLookahead) lines.push(`MAX_TIMESTAMP_LOOKAHEAD = ${ts.maxLookahead}`);
+  if(ts.timeFormat) lines.push(`TIME_FORMAT = ${ts.timeFormat}`);
+  if(ts.timePrefix) lines.push(`TIME_PREFIX = ${ts.timePrefix}`);
+  const lb = state.lineBreakProps || {};
+  if(lb.shouldLineMerge) lines.push(`SHOULD_LINEMERGE = ${lb.shouldLineMerge}`);
+  if(lb.lineBreaker) lines.push(`LINE_BREAKER = ${lb.lineBreaker}`);
+  const extraction = state.fieldExtraction || {};
+  if(extraction.propsConf) lines.push(...extraction.propsConf.split('\n').filter(Boolean));
+  return lines.join('\n') + '\n';
+}
+
+function checkBatchConsistency(rawText){
+  const lines = String(rawText || '').split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+  if(!lines.length) return null;
+
+  const events = lines.map((line, i) => {
+    const {detected, extracted, values} = detectRawFormat(line);
+    const preferred = findTimestampCandidates(line, values)[0] || null;
+    return {
+      index: i + 1,
+      line,
+      format: detected,
+      fields: extracted,
+      timestampFormat: preferred ? preferred.detection.formatName : null,
+      timezone: preferred ? preferred.detection.timezone : null,
+      utcStatus: preferred ? preferred.detection.utcStatus : null
+    };
+  });
+
+  const countBy = (arr, keyFn) => {
+    const counts = new Map();
+    arr.forEach(item => { const k = keyFn(item); if(k === null || k === undefined) return; counts.set(k, (counts.get(k) || 0) + 1); });
+    return counts;
+  };
+  const mode = counts => { let best = null, bestCount = -1; for(const [k,v] of counts) if(v > bestCount){ best = k; bestCount = v; } return best; };
+
+  const formatCounts = countBy(events, e => e.format);
+  const dominantFormat = mode(formatCounts);
+  const formatDrift = events.filter(e => e.format !== dominantFormat);
+
+  const sameFormatEvents = events.filter(e => e.format === dominantFormat);
+  const fieldSets = sameFormatEvents.map(e => new Set(e.fields));
+  const fieldPresenceCounts = new Map();
+  fieldSets.forEach(set => set.forEach(f => fieldPresenceCounts.set(f, (fieldPresenceCounts.get(f) || 0) + 1)));
+  const allFieldsSeen = [...fieldPresenceCounts.keys()].sort();
+  const commonFields = allFieldsSeen.filter(f => fieldPresenceCounts.get(f) === sameFormatEvents.length);
+  const fieldDrift = sameFormatEvents
+    .map((e, i) => ({index: e.index, missing: allFieldsSeen.filter(f => !fieldSets[i].has(f))}))
+    .filter(d => d.missing.length);
+
+  const tsFormatCounts = countBy(events, e => e.timestampFormat);
+  const dominantTsFormat = mode(tsFormatCounts);
+  const tsDrift = events.filter(e => e.timestampFormat && e.timestampFormat !== dominantTsFormat);
+  const noTimestamp = events.filter(e => !e.timestampFormat);
+
+  const tzStatusCounts = countBy(events, e => e.utcStatus);
+  const tzDrift = events.filter(e => e.utcStatus === 'Timezone missing');
+
+  const problems = formatDrift.length + fieldDrift.length + tsDrift.length + noTimestamp.length;
+  const verdict = problems === 0 ? 'good' : ((formatDrift.length || noTimestamp.length === events.length) ? 'bad' : 'warn');
+
+  return {
+    totalEvents: events.length, events,
+    dominantFormat, formatCounts: [...formatCounts.entries()], formatDrift,
+    commonFields, fieldDrift,
+    dominantTsFormat, tsFormatCounts: [...tsFormatCounts.entries()], tsDrift, noTimestamp,
+    tzStatusCounts: [...tzStatusCounts.entries()], tzDrift,
+    verdict
+  };
+}
+
 function renderExtractedFields(extracted) {
   $('#fieldList').innerHTML = extracted.length
     ? extracted.slice(0,80).map(f => `<div class="item"><code>${esc(f)}</code></div>`).join('')
@@ -1913,6 +2109,35 @@ function renderRawLineBreakFindings(raw) {
   renderLineBreakPropsSuggestion(detection);
 }
 
+let lastAnalysis = null;
+
+function renderFieldExtractionSuggestion(sourcetypeName, suggestion) {
+  renderDetection($('#fieldExtractionResult'), {
+    cls: suggestion.cls,
+    title: suggestion.title,
+    meta: [['Suggested sourcetype', sourcetypeName]],
+    notes: suggestion.notes.join(' ')
+  }, '', '');
+  const propsBox = $('#fieldExtractionProps');
+  propsBox.innerHTML = suggestion.propsConf
+    ? `<div class="detectTitle">Suggested props.conf lines</div><pre>${esc(suggestion.propsConf)}</pre>`
+    : `<div class="detectTitle">Suggested props.conf lines</div><div class="detectNotes">No extraction template available for this format yet.</div>`;
+}
+
+function downloadPropsConf() {
+  if(!lastAnalysis) return;
+  const text = buildPropsConfBundle(lastAnalysis);
+  const blob = new Blob([text], {type:'text/plain'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'props.conf';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
 function analyseRawEvent() {
   const raw = $('#sampleRawEvent').value.trim();
   if(!raw) { renderValidationWarning($('#logFormatResult'), 'Paste a sample raw event first.'); return; }
@@ -1922,6 +2147,35 @@ function analyseRawEvent() {
   renderRawTimestampFindings(raw, result.values);
   renderRawUsernameFindings(raw, result.values);
   renderRawLineBreakFindings(raw);
+
+  const sourcetypeName = suggestSourcetypeName(result.detected, result.values);
+  const fieldExtraction = suggestFieldExtraction(result.detected, raw, result.values, result.extracted);
+  renderFieldExtractionSuggestion(sourcetypeName, fieldExtraction);
+
+  const timestampCandidate = findTimestampCandidates(raw, result.values)[0] || null;
+  let timestampProps = null;
+  if(timestampCandidate) {
+    const firstLine = raw.split(/\r?\n/)[0] || raw;
+    const idx = firstLine.indexOf(timestampCandidate.value);
+    timestampProps = {
+      maxLookahead: idx >= 0 ? idx + timestampCandidate.value.length : timestampCandidate.value.length,
+      timeFormat: timestampCandidate.detection.timeFormat || '',
+      timePrefix: idx > 0 ? firstLine.slice(0, idx) : ''
+    };
+  }
+  const lineBreakDetection = detectLineBreakFormat(raw);
+
+  lastAnalysis = {
+    sourcetypeName,
+    fieldExtraction,
+    timestampProps,
+    lineBreakProps: {
+      shouldLineMerge: lineBreakDetection.shouldLineMerge || '',
+      lineBreaker: lineBreakDetection.lineBreaker || ''
+    }
+  };
+  const downloadBtn = $('#downloadPropsBtn');
+  if(downloadBtn) downloadBtn.disabled = false;
 }
 
 function detectStandaloneTimestamp() {
@@ -1946,6 +2200,87 @@ function detectStandaloneLineBreak() {
   renderLineBreakPropsSuggestion(detection);
 }
 
+function renderBatchConsistency(result) {
+  const box = $('#batchConsistencyResult');
+  const details = $('#batchConsistencyDetails');
+  if(!result) {
+    renderDetection(box, null, 'No batch analysed yet', 'Paste multiple events, one per line, and select Check consistency.');
+    details.innerHTML = '';
+    return;
+  }
+  const formatSummary = result.formatCounts.map(([f,c]) => `${f} (${c})`).join(', ');
+  const tsSummary = result.tsFormatCounts.length ? result.tsFormatCounts.map(([f,c]) => `${f} (${c})`).join(', ') : 'No timestamps detected';
+  const notes = [
+    result.formatDrift.length ? `${result.formatDrift.length} event(s) do not match the dominant format: line ${result.formatDrift.map(e=>e.index).join(', ')}.` : '',
+    result.fieldDrift.length ? `${result.fieldDrift.length} event(s) are missing fields present in other same-format events: ${result.fieldDrift.map(d=>`line ${d.index} (missing ${d.missing.join(', ')})`).join('; ')}.` : '',
+    result.noTimestamp.length ? `${result.noTimestamp.length} event(s) have no detected timestamp: line ${result.noTimestamp.map(e=>e.index).join(', ')}.` : '',
+    result.tsDrift.length ? `${result.tsDrift.length} event(s) use a different timestamp format than the majority: line ${result.tsDrift.map(e=>e.index).join(', ')}.` : '',
+    result.tzDrift.length ? `${result.tzDrift.length} event(s) have a timestamp with no timezone context: line ${result.tzDrift.map(e=>e.index).join(', ')}.` : ''
+  ].filter(Boolean);
+  renderDetection(box, {
+    cls: result.verdict,
+    title: result.verdict === 'good' ? `${result.totalEvents} events are consistent` : `${result.totalEvents} events analysed - drift detected`,
+    confidence: `${result.totalEvents} event(s)`,
+    meta: [
+      ['Dominant format', result.dominantFormat],
+      ['Format breakdown', formatSummary],
+      ['Timestamp formats', tsSummary]
+    ],
+    notes: notes.length ? notes.join(' ') : 'No drift detected across the pasted events.'
+  }, '', '');
+  details.innerHTML = result.events.map(e => `
+    <div class="item">
+      <strong>Line ${esc(e.index)}: ${esc(e.format)}</strong>
+      <span class="small">Fields: ${esc(e.fields.join(', ') || 'none')}</span>
+      <span class="small">Timestamp: ${esc(e.timestampFormat || 'not detected')}${e.timezone ? ' | ' + esc(e.timezone) : ''}</span>
+    </div>
+  `).join('');
+}
+
+function checkBatchConsistencyHandler() {
+  const value = $('#batchEventsInput').value;
+  if(!value.trim()) { renderValidationWarning($('#batchConsistencyResult'), 'Paste two or more sample events, one per line, first.'); return; }
+  renderBatchConsistency(checkBatchConsistency(value));
+}
+
+function renderRegexTest(result) {
+  const box = $('#regexTestResult');
+  if(!result) {
+    renderDetection(box, null, 'No regex tested yet', 'Enter a pattern and test string and select Test regex.');
+    $('#regexMatches').innerHTML = '';
+    $('#regexHighlighted').innerHTML = '';
+    return;
+  }
+  if(!result.valid) {
+    renderValidationWarning(box, `Invalid regular expression: ${result.error}`);
+    $('#regexMatches').innerHTML = '';
+    $('#regexHighlighted').innerHTML = '';
+    return;
+  }
+  renderDetection(box, {
+    cls: result.matches.length ? 'good' : 'warn',
+    title: result.matches.length ? `${result.matches.length} match${result.matches.length === 1 ? '' : 'es'} found` : 'No matches found',
+    notes: result.truncated ? 'Match list truncated at 500 matches.' : ''
+  }, '', '');
+  $('#regexMatches').innerHTML = result.matches.length
+    ? result.matches.slice(0,50).map((m,i) => {
+        const groupsText = m.groups.length ? m.groups.map((g,gi) => `$${gi+1}=${g ?? ''}`).join(', ') : '';
+        const namedText = m.namedGroups ? Object.entries(m.namedGroups).map(([k,v]) => `${k}=${v ?? ''}`).join(', ') : '';
+        const extra = [groupsText, namedText].filter(Boolean).join(' | ');
+        return `<div class="item"><strong>Match ${i+1} @ ${m.index}: <code>${esc(m.match)}</code></strong>${extra ? `<span class="small">${esc(extra)}</span>` : ''}</div>`;
+      }).join('')
+    : '<div class="item small">No matches found.</div>';
+  $('#regexHighlighted').innerHTML = buildHighlightedText($('#regexTestString').value, result.matches);
+}
+
+function runRegexTestHandler() {
+  const pattern = $('#regexPattern').value;
+  const flags = $('#regexFlags').value;
+  const text = $('#regexTestString').value;
+  if(!pattern) { renderValidationWarning($('#regexTestResult'), 'Enter a regex pattern first.'); return; }
+  renderRegexTest(runRegexTest(pattern, flags, text));
+}
+
 function copyResults() {
   const logTitle = $('#logFormatResult .detectTitle')?.innerText || '';
   const tsTitle = $('#timestampResult .detectTitle')?.innerText || '';
@@ -1963,25 +2298,39 @@ function copyResults() {
     .catch(() => { setStatus('Clipboard unavailable - copy the text below.'); prompt('Copy results:', text); });
 }
 
-function resetAll() {
-  $('#sampleRawEvent').value = '';
-  $('#sampleDateTime').value = '';
-  $('#sampleUsername').value = '';
-  $('#sampleLineBreak').value = '';
-  $('#sampleSplunkTimeFormat').value = '';
+function resetRawEventOutputs() {
   renderDetection($('#logFormatResult'), null, 'No log format detected yet', 'Paste a raw event and select Detect log format.');
-  renderDetection($('#timestampResult'), null, 'No timestamp detected yet', 'Paste one timestamp and select Detect timestamp.');
-  renderPropsConfSuggestion(null);
-  renderReverseTimeFormatResult(null);
-  renderDetection($('#usernameResult'), null, 'No username detected yet', 'Paste one username, principal, account ID, or SAML NameID Format URN and select Detect username.');
-  renderLineBreakResult($('#lineBreakResult'), null);
-  renderLineBreakPropsSuggestion(null);
   renderDetection($('#rawTimestampResult'), null, 'No raw event analysed yet', 'The raw event detector will list timestamp candidates here.');
   renderDetection($('#rawUsernameResult'), null, 'No raw event analysed yet', 'The raw event detector will list username candidates here.');
   renderDetection($('#rawLineBreakResult'), null, 'No raw event analysed yet', 'The raw event detector will summarise line break structure here.');
   $('#timestampCandidates').innerHTML = '';
   $('#usernameCandidates').innerHTML = '';
   renderExtractedFields([]);
+  renderFieldExtractionSuggestion('custom:sourcetype', {title:'No raw event analysed yet', cls:'info', propsConf:'', notes:['Analyse a raw event to generate an extraction suggestion.']});
+  lastAnalysis = null;
+  const downloadBtn = $('#downloadPropsBtn');
+  if(downloadBtn) downloadBtn.disabled = true;
+}
+
+function resetAll() {
+  $('#sampleRawEvent').value = '';
+  $('#sampleDateTime').value = '';
+  $('#sampleUsername').value = '';
+  $('#sampleLineBreak').value = '';
+  $('#sampleSplunkTimeFormat').value = '';
+  $('#batchEventsInput').value = '';
+  $('#regexPattern').value = '';
+  $('#regexFlags').value = '';
+  $('#regexTestString').value = '';
+  renderDetection($('#timestampResult'), null, 'No timestamp detected yet', 'Paste one timestamp and select Detect timestamp.');
+  renderPropsConfSuggestion(null);
+  renderReverseTimeFormatResult(null);
+  renderDetection($('#usernameResult'), null, 'No username detected yet', 'Paste one username, principal, account ID, or SAML NameID Format URN and select Detect username.');
+  renderLineBreakResult($('#lineBreakResult'), null);
+  renderLineBreakPropsSuggestion(null);
+  renderBatchConsistency(null);
+  renderRegexTest(null);
+  resetRawEventOutputs();
 }
 
 function init() {
@@ -1994,15 +2343,22 @@ function init() {
   $('#reverseTimeFormatBtn').addEventListener('click', detectReverseTimeFormat);
   $('#detectUsernameBtn').addEventListener('click', detectStandaloneUsername);
   $('#detectLineBreakBtn').addEventListener('click', detectStandaloneLineBreak);
+  $('#downloadPropsBtn').addEventListener('click', downloadPropsConf);
+  $('#checkBatchBtn').addEventListener('click', checkBatchConsistencyHandler);
+  $('#clearBatchBtn').addEventListener('click', () => {
+    $('#batchEventsInput').value = '';
+    renderBatchConsistency(null);
+  });
+  $('#testRegexBtn').addEventListener('click', runRegexTestHandler);
+  $('#clearRegexBtn').addEventListener('click', () => {
+    $('#regexPattern').value = '';
+    $('#regexFlags').value = '';
+    $('#regexTestString').value = '';
+    renderRegexTest(null);
+  });
   $('#clearRawBtn').addEventListener('click', () => {
     $('#sampleRawEvent').value='';
-    renderDetection($('#logFormatResult'), null, 'No log format detected yet', 'Paste a raw event and select Detect log format.');
-    renderDetection($('#rawTimestampResult'), null, 'No raw event analysed yet', 'The raw event detector will list timestamp candidates here.');
-    renderDetection($('#rawUsernameResult'), null, 'No raw event analysed yet', 'The raw event detector will list username candidates here.');
-    renderDetection($('#rawLineBreakResult'), null, 'No raw event analysed yet', 'The raw event detector will summarise line break structure here.');
-    $('#timestampCandidates').innerHTML='';
-    $('#usernameCandidates').innerHTML='';
-    renderExtractedFields([]);
+    resetRawEventOutputs();
   });
   $('#clearTimestampBtn').addEventListener('click', () => {
     $('#sampleDateTime').value='';
@@ -2062,6 +2418,13 @@ if(typeof module !== 'undefined' && module.exports) {
     detectLineBreakFormat,
     detectUsernameFormat,
     findUsernameCandidates,
-    detectRawFormat
+    detectRawFormat,
+    slug,
+    suggestSourcetypeName,
+    suggestFieldExtraction,
+    buildPropsConfBundle,
+    checkBatchConsistency,
+    runRegexTest,
+    buildHighlightedText
   };
 }
