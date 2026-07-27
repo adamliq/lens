@@ -821,6 +821,43 @@ function detectDateTimeFormat(value){
   return result('Unknown or unsupported timestamp format','Custom parser required','Low','bad',{example:input, precision:'Unknown', timezone:'Unknown', utcStatus:'Unknown', normalisation:'Unknown', notes:['No known pattern matched. Document the vendor format and create a parsing test before relying on the source.']});
 }
 
+function disambiguateDate(value){
+  const trimmed = String(value || '').trim();
+  const m = trimmed.match(/^(\d{1,2})([/.-])(\d{1,2})\2(\d{2,4})(.*)$/);
+  if(!m) return {applicable:false};
+  const [, firstRaw, sep, secondRaw, yearRaw, rest] = m;
+  const first = Number(firstRaw), second = Number(secondRaw);
+  const yearAssumed = yearRaw.length === 2;
+  const year = yearAssumed ? Number(yearRaw) + (Number(yearRaw) < 70 ? 2000 : 1900) : Number(yearRaw);
+
+  const buildIso = (mm, dd) => {
+    if(mm < 1 || mm > 12 || dd < 1 || dd > 31) return null;
+    const daysInMonth = new Date(year, mm, 0).getDate();
+    if(dd > daysInMonth) return null;
+    return `${String(year).padStart(4,'0')}-${String(mm).padStart(2,'0')}-${String(dd).padStart(2,'0')}`;
+  };
+
+  const usIso = buildIso(first, second);
+  const euIso = buildIso(second, first);
+  const bothValid = usIso !== null && euIso !== null && usIso !== euIso;
+
+  let note;
+  if(first > 12) note = 'The first component is greater than 12, so this can only be DD' + sep + 'MM' + sep + 'YYYY (EU/ISO) ordering.';
+  else if(second > 12) note = 'The second component is greater than 12, so this can only be MM' + sep + 'DD' + sep + 'YYYY (US) ordering.';
+  else if(usIso === euIso) note = 'Day and month are the same value, so both orderings produce the same date.';
+  else note = 'Both orderings are valid calendar dates - confirm the source locale/vendor documentation before choosing one.';
+
+  return {
+    applicable: true,
+    ambiguous: bothValid,
+    input: trimmed,
+    yearAssumed,
+    usInterpretation: usIso ? usIso + rest : null,
+    euInterpretation: euIso ? euIso + rest : null,
+    note
+  };
+}
+
 const USERNAME_FORMATS = [
   {
         "precedence": 1,
@@ -1866,6 +1903,52 @@ function detectLineBreakFormat(value) {
   });
 }
 
+const STACK_TRACE_SIGNATURES = [
+  {id:'java', name:'Java', startsWith:/^(Exception in thread |Caused by: |(?:[a-z][\w$]*\.)+[A-Z][\w$]*(?:Exception|Error)[:\s])/, continuation:/^\s*(at\s+[\w.$<>]+\(.*\)|\.\.\.\s*\d+\s+more|Caused by:)/, breakExclude:'Caused by:'},
+  {id:'python', name:'Python', startsWith:/^Traceback \(most recent call last\):/, continuation:/^(\s*File "|\s+\S|\w+(?:Error|Exception|Warning):)/, breakExclude:'\\w+(?:Error|Exception|Warning):'},
+  {id:'dotnet', name:'.NET / C#', startsWith:/^[\w$]+\.[\w$.]*Exception:/, continuation:/^(\s*at\s+[\w.<>`]+\(.*\)|--- End of inner exception)/, breakExclude:'--- End of inner exception'},
+  {id:'node', name:'Node.js / JavaScript', startsWith:/^(TypeError|ReferenceError|SyntaxError|RangeError|Error):/, continuation:/^\s*at\s+.*\(.*:\d+:\d+\)/, breakExclude:null},
+  {id:'go', name:'Go', startsWith:/^panic:/, continuation:/^(goroutine \d+ \[|\s*[\w./]+\.go:\d+)/, breakExclude:'goroutine \\d+ '}
+];
+
+function detectStackTrace(raw){
+  const lines = String(raw || '').split(/\r?\n/);
+  const nonEmpty = lines.filter(l => l.trim().length);
+  if(!nonEmpty.length) return {detected:false};
+  const startIndex = lines.findIndex(l => l.trim().length);
+  const firstLine = lines[startIndex];
+
+  const matched = STACK_TRACE_SIGNATURES.find(sig => sig.startsWith.test(firstLine));
+  if(!matched) return {detected:false};
+
+  const headerLine = firstLine.trim();
+  let continuationLineCount = 0;
+  for(let i = startIndex + 1; i < lines.length; i++){
+    if(matched.continuation.test(lines[i])) continuationLineCount++;
+  }
+
+  const summaryLine = matched.id === 'python' ? (nonEmpty[nonEmpty.length - 1] || '') : headerLine;
+  let exceptionType = null, exceptionMessage = null;
+  const colonMatch = summaryLine.match(/^([\w.$]+(?:Exception|Error|Warning))\s*:\s*(.*)$/);
+  if(colonMatch){ exceptionType = colonMatch[1]; exceptionMessage = colonMatch[2]; }
+
+  const lineBreaker = '([\\r\\n]+)(?=\\S)' + (matched.breakExclude ? `(?!${matched.breakExclude})` : '');
+
+  return {
+    detected:true,
+    language: matched.name,
+    languageId: matched.id,
+    headerLine,
+    exceptionType,
+    exceptionMessage,
+    continuationLineCount,
+    totalNonEmptyLines: nonEmpty.length,
+    shouldLineMerge:'false',
+    lineBreaker,
+    notes:`Detected a ${matched.name} stack trace with ${continuationLineCount} continuation line(s). Use LINE_BREAKER = ${lineBreaker} so the exception header and its continuation lines stay attached to one event. Validate against a larger real sample before deploying.`
+  };
+}
+
 function renderLineBreakResult(target, detection) {
   renderDetection(target, detection ? {
     cls:detection.cls,
@@ -2218,6 +2301,29 @@ function suggestFieldExtraction(detected, raw, values={}, extracted=[]){
     ['Document the field layout from real samples and write explicit EXTRACT/REPORT transforms once the schema is confirmed.']);
 }
 
+function csvEscape(value){
+  const v = String(value ?? '');
+  return /[",\n]/.test(v) ? `"${v.replace(/"/g,'""')}"` : v;
+}
+
+function buildLookupSkeleton(fieldName, rawValues){
+  const field = String(fieldName || '').trim() || 'field';
+  const values = String(rawValues || '')
+    .split(/\r?\n|,/)
+    .map(v => v.trim())
+    .filter(Boolean);
+  const distinct = [...new Set(values)];
+  if(!distinct.length) return {valid:false, error:'Enter at least one sample value, one per line or comma-separated.'};
+
+  const outputField = `${field}_normalized`;
+  const csv = [`${csvEscape(field)},${csvEscape(outputField)}`, ...distinct.map(v => `${csvEscape(v)},`)].join('\n') + '\n';
+  const lookupName = `${field}_lookup`;
+  const transformsConf = `[${lookupName}]\nfilename = ${lookupName}.csv`;
+  const propsConf = `LOOKUP-${field} = ${lookupName} ${field} OUTPUT ${outputField}`;
+
+  return {valid:true, fieldName:field, outputField, distinctValueCount:distinct.length, csv, lookupName, transformsConf, propsConf};
+}
+
 function buildCimFieldAliases(extracted=[]){
   const matches = REQUIRED_FIELDS
     .map(row => ({row, hits: findFields(extracted, row.names, row.id)}))
@@ -2254,6 +2360,56 @@ function detectTruncationRisk(raw){
   if(/[,:]\s*$/.test(trimmed)) reasons.push('Sample ends with a trailing comma or colon, suggesting the event was cut off mid-field.');
 
   return {looksTruncated: reasons.length > 0, reasons};
+}
+
+const INVISIBLE_CHAR_NAMES = {
+  ' ': 'non-breaking space (U+00A0)',
+  '​': 'zero-width space (U+200B)',
+  '‌': 'zero-width non-joiner (U+200C)',
+  '‍': 'zero-width joiner (U+200D)',
+  '﻿': 'byte order mark / zero-width no-break space (U+FEFF)',
+  ' ': 'line separator (U+2028)',
+  ' ': 'paragraph separator (U+2029)'
+};
+
+function detectEncodingIssues(raw){
+  const text = String(raw ?? '');
+  const issues = [];
+  if(!text) return {hasIssues:false, issues};
+
+  if(text.charCodeAt(0) === 0xFEFF){
+    issues.push({cls:'warn', message:'Sample starts with a UTF-8/UTF-16 byte order mark (BOM). Some parsers include the BOM in the first extracted field unless it is stripped.'});
+  }
+
+  const replacementCount = (text.match(/�/g) || []).length;
+  if(replacementCount > 0){
+    issues.push({cls:'bad', message:`${replacementCount} Unicode replacement character(s) (U+FFFD) found, indicating the text was decoded with the wrong character encoding somewhere upstream.`});
+  }
+
+  const crlf = (text.match(/\r\n/g) || []).length;
+  const bareLf = (text.match(/(?<!\r)\n/g) || []).length;
+  const bareCr = (text.match(/\r(?!\n)/g) || []).length;
+  const lineEndingKinds = [crlf > 0 && 'CRLF', bareLf > 0 && 'LF', bareCr > 0 && 'bare CR'].filter(Boolean);
+  if(lineEndingKinds.length > 1){
+    issues.push({cls:'warn', message:`Mixed line endings detected (${lineEndingKinds.join(', ')}: ${crlf} CRLF, ${bareLf} LF, ${bareCr} CR). LINE_BREAKER patterns anchored on one style may miss events using another.`});
+  }
+
+  const controlChars = [...text].filter(ch => {
+    const code = ch.codePointAt(0);
+    return (code < 32 && ch !== '\t' && ch !== '\n' && ch !== '\r') || (code >= 127 && code <= 159);
+  });
+  if(controlChars.length){
+    const codes = [...new Set(controlChars.map(ch => 'U+' + ch.codePointAt(0).toString(16).toUpperCase().padStart(4,'0')))];
+    issues.push({cls:'bad', message:`${controlChars.length} non-printable control character(s) found (${codes.slice(0,6).join(', ')}${codes.length > 6 ? ', ...' : ''}). These often break regex-based field extraction.`});
+  }
+
+  Object.entries(INVISIBLE_CHAR_NAMES).forEach(([ch, name]) => {
+    const searchText = ch === '﻿' ? text.slice(1) : text;
+    const count = searchText.split(ch).length - 1;
+    if(count > 0) issues.push({cls:'warn', message:`${count} occurrence(s) of ${name} found. These are invisible in most editors and can silently break exact-match regex or delimiter parsing.`});
+  });
+
+  return {hasIssues: issues.length > 0, issues};
 }
 
 function buildPropsConfBundle(state={}){
@@ -2462,6 +2618,29 @@ function parsePropsConfText(text){
     if(kvMatch) settings[kvMatch[1].trim()] = kvMatch[2];
   });
   return {stanza, settings};
+}
+
+function diffPropsConf(textA, textB){
+  const a = parsePropsConfText(textA).settings;
+  const b = parsePropsConfText(textB).settings;
+  const keys = new Set([...Object.keys(a), ...Object.keys(b)]);
+  const added = [], removed = [], changed = [], unchanged = [];
+  keys.forEach(key => {
+    const inA = Object.prototype.hasOwnProperty.call(a, key);
+    const inB = Object.prototype.hasOwnProperty.call(b, key);
+    if(inA && !inB) removed.push({key, before:a[key]});
+    else if(!inA && inB) added.push({key, after:b[key]});
+    else if(a[key] !== b[key]) changed.push({key, before:a[key], after:b[key]});
+    else unchanged.push({key, value:a[key]});
+  });
+  const byKey = (x,y) => x.key.localeCompare(y.key);
+  return {
+    added: added.sort(byKey),
+    removed: removed.sort(byKey),
+    changed: changed.sort(byKey),
+    unchanged: unchanged.sort(byKey),
+    hasDiff: added.length > 0 || removed.length > 0 || changed.length > 0
+  };
 }
 
 function validatePropsConf(propsText, sampleText){
@@ -2819,11 +2998,29 @@ function renderRawUsernameFindings(raw, values) {
   if(!$('#sampleUsername').value) $('#sampleUsername').value = preferred.value;
 }
 
+function renderStackTraceNote(target, raw) {
+  if(!target) return;
+  const detection = detectStackTrace(raw);
+  if(!detection.detected){
+    target.hidden = true;
+    target.innerHTML = '';
+    return;
+  }
+  target.hidden = false;
+  target.innerHTML = `
+    <div class="detectTitle">Stack trace detected: ${esc(detection.language)}</div>
+    <div class="detectNotes">${esc(detection.notes)}</div>
+    <pre>SHOULD_LINEMERGE = ${esc(detection.shouldLineMerge)}
+LINE_BREAKER = ${esc(detection.lineBreaker)}</pre>
+  `;
+}
+
 function renderRawLineBreakFindings(raw) {
   const detection = detectLineBreakFormat(raw);
   renderLineBreakResult($('#rawLineBreakResult'), detection);
   if(!$('#sampleLineBreak').value) $('#sampleLineBreak').value = raw;
   renderLineBreakPropsSuggestion(detection);
+  renderStackTraceNote($('#rawStackTraceResult'), raw);
 }
 
 let lastAnalysis = null;
@@ -2870,6 +3067,24 @@ function downloadReport() {
   URL.revokeObjectURL(url);
 }
 
+function renderEncodingResult(raw) {
+  const box = $('#encodingResult');
+  const list = $('#encodingIssueList');
+  const result = detectEncodingIssues(raw);
+  if(!result.hasIssues){
+    renderDetection(box, {cls:'good', title:'No encoding issues detected', confidence:'Clean sample'}, '', '');
+    list.innerHTML = '';
+    return;
+  }
+  const badCount = result.issues.filter(i => i.cls === 'bad').length;
+  renderDetection(box, {
+    cls: badCount ? 'bad' : 'warn',
+    title: `${result.issues.length} encoding issue(s) found`,
+    confidence: badCount ? `${badCount} likely to break parsing` : 'Worth reviewing'
+  }, '', '');
+  list.innerHTML = result.issues.map(i => `<div class="item"><span class="pill ${i.cls}">${esc(i.cls)}</span> <span class="small">${esc(i.message)}</span></div>`).join('');
+}
+
 function analyseRawEvent() {
   const raw = $('#sampleRawEvent').value.trim();
   if(!raw) { renderValidationWarning($('#logFormatResult'), 'Paste a sample raw event first.'); return; }
@@ -2881,6 +3096,7 @@ function analyseRawEvent() {
   renderRawUsernameFindings(raw, result.values);
   renderRawIpFindings(raw, result.values);
   renderRawLineBreakFindings(raw);
+  renderEncodingResult(raw);
 
   const sourcetypeName = suggestSourcetypeName(result.detected, result.values);
   const cimAliases = buildCimFieldAliases(result.extracted);
@@ -2943,6 +3159,7 @@ function detectStandaloneLineBreak() {
   const detection = detectLineBreakFormat(value);
   renderLineBreakResult($('#lineBreakResult'), detection);
   renderLineBreakPropsSuggestion(detection);
+  renderStackTraceNote($('#stackTraceResult'), value);
 }
 
 function renderBatchConsistency(result) {
@@ -3060,6 +3277,107 @@ function validatePropsConfHandler() {
   const sample = $('#propsConfSample').value;
   if(!propsText.trim()) { renderValidationWarning($('#propsValidatorResult'), 'Paste a props.conf stanza first.'); return; }
   renderPropsValidatorResult(validatePropsConf(propsText, sample));
+}
+
+function renderPropsDiff(diff) {
+  const box = $('#propsDiffResult');
+  const list = $('#propsDiffList');
+  if(!diff) {
+    renderDetection(box, null, 'No comparison run yet', 'Paste a before and after stanza and select Compare.');
+    list.innerHTML = '';
+    return;
+  }
+  renderDetection(box, {
+    cls: diff.hasDiff ? 'warn' : 'good',
+    title: diff.hasDiff ? `${diff.added.length} added, ${diff.removed.length} removed, ${diff.changed.length} changed` : 'No differences found',
+    confidence: `${diff.unchanged.length} setting(s) unchanged`
+  }, '', '');
+  list.innerHTML = [
+    ...diff.added.map(d => `<div class="item"><strong><code>${esc(d.key)}</code> <span class="pill good">added</span></strong><span class="small">${esc(d.after)}</span></div>`),
+    ...diff.removed.map(d => `<div class="item"><strong><code>${esc(d.key)}</code> <span class="pill bad">removed</span></strong><span class="small">${esc(d.before)}</span></div>`),
+    ...diff.changed.map(d => `<div class="item"><strong><code>${esc(d.key)}</code> <span class="pill warn">changed</span></strong><span class="small">${esc(d.before)} &rarr; ${esc(d.after)}</span></div>`)
+  ].join('');
+}
+
+function diffPropsConfHandler() {
+  const before = $('#propsDiffBefore').value;
+  const after = $('#propsDiffAfter').value;
+  if(!before.trim() && !after.trim()) { renderValidationWarning($('#propsDiffResult'), 'Paste a before and after stanza first.'); return; }
+  renderPropsDiff(diffPropsConf(before, after));
+}
+
+function renderDateDisambiguatorResult(result) {
+  const box = $('#dateDisambiguatorResult');
+  if(!result || !result.applicable) {
+    renderDetection(box, null, 'No date disambiguated yet', 'Enter a slash/dot/dash-delimited date and select Disambiguate.');
+    return;
+  }
+  renderDetection(box, {
+    cls: result.ambiguous ? 'warn' : 'good',
+    title: result.ambiguous ? 'Ambiguous - both orderings are valid' : 'Unambiguous',
+    confidence: result.yearAssumed ? '2-digit year expanded' : '',
+    meta: [
+      ['US ordering (MM/DD/YYYY)', result.usInterpretation || 'Not a valid date'],
+      ['EU/ISO ordering (DD/MM/YYYY)', result.euInterpretation || 'Not a valid date']
+    ],
+    notes: result.note
+  }, '', '');
+}
+
+function disambiguateDateHandler() {
+  const value = $('#ambiguousDateInput').value;
+  if(!value.trim()) { renderValidationWarning($('#dateDisambiguatorResult'), 'Enter a date value first.'); return; }
+  const result = disambiguateDate(value);
+  if(!result.applicable) { renderValidationWarning($('#dateDisambiguatorResult'), 'This does not look like a slash/dot/dash-delimited date (e.g. 03/04/2026).'); return; }
+  renderDateDisambiguatorResult(result);
+}
+
+let lastLookupSkeleton = null;
+
+function renderLookupResult(result) {
+  const box = $('#lookupResult');
+  const downloadBtn = $('#downloadLookupBtn');
+  if(!result) {
+    box.innerHTML = `<div class="detectTitle">Lookup skeleton</div><div class="detectNotes">Enter a field name and sample values, then select Generate lookup skeleton.</div>`;
+    if(downloadBtn) downloadBtn.disabled = true;
+    return;
+  }
+  if(!result.valid) {
+    box.className = 'propsBox';
+    box.innerHTML = `<div class="detectTitle">Lookup skeleton</div><div class="detectNotes">${esc(result.error)}</div>`;
+    if(downloadBtn) downloadBtn.disabled = true;
+    return;
+  }
+  box.innerHTML = `
+    <div class="detectTitle">${esc(result.distinctValueCount)} distinct value(s) &rarr; ${esc(result.lookupName)}.csv</div>
+    <pre>${esc(result.csv)}</pre>
+    <div class="detectTitle">transforms.conf</div>
+    <pre>${esc(result.transformsConf)}</pre>
+    <div class="detectTitle">props.conf</div>
+    <pre>${esc(result.propsConf)}</pre>
+  `;
+  if(downloadBtn) downloadBtn.disabled = false;
+}
+
+function generateLookupHandler() {
+  const fieldName = $('#lookupFieldName').value;
+  const values = $('#lookupValues').value;
+  const result = buildLookupSkeleton(fieldName, values);
+  lastLookupSkeleton = result.valid ? result : null;
+  renderLookupResult(result);
+}
+
+function downloadLookupCsv() {
+  if(!lastLookupSkeleton) return;
+  const blob = new Blob([lastLookupSkeleton.csv], {type:'text/csv'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `${lastLookupSkeleton.lookupName}.csv`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
 }
 
 function renderSplResult(searches) {
@@ -3233,6 +3551,9 @@ function resetRawEventOutputs() {
   $('#ipCandidates').innerHTML = '';
   renderExtractedFields([]);
   renderFieldExtractionSuggestion('custom:sourcetype', {title:'No raw event analysed yet', cls:'info', propsConf:'', notes:['Analyse a raw event to generate an extraction suggestion.']});
+  renderDetection($('#encodingResult'), null, 'No raw event analysed yet', 'The raw event detector will report encoding issues here.');
+  $('#encodingIssueList').innerHTML = '';
+  renderStackTraceNote($('#rawStackTraceResult'), '');
   lastAnalysis = null;
   const downloadBtn = $('#downloadPropsBtn');
   if(downloadBtn) downloadBtn.disabled = true;
@@ -3267,6 +3588,11 @@ function resetAll() {
   $('#volEventsPerSecond').value = '';
   $('#volEventsPerDay').value = '';
   $('#volRetentionDays').value = '';
+  $('#propsDiffBefore').value = '';
+  $('#propsDiffAfter').value = '';
+  $('#ambiguousDateInput').value = '';
+  $('#lookupFieldName').value = '';
+  $('#lookupValues').value = '';
   renderDetection($('#timestampResult'), null, 'No timestamp detected yet', 'Paste one timestamp and select Detect timestamp.');
   renderPropsConfSuggestion(null);
   renderReverseTimeFormatResult(null);
@@ -3274,16 +3600,21 @@ function resetAll() {
   renderIpResult($('#ipResult'), null);
   renderLineBreakResult($('#lineBreakResult'), null);
   renderLineBreakPropsSuggestion(null);
+  renderStackTraceNote($('#stackTraceResult'), '');
   renderBatchConsistency(null);
   renderRegexTest(null);
   renderEpochToDateResult(null);
   renderDateToEpochResult(null);
+  renderDateDisambiguatorResult(null);
   renderPropsValidatorResult(null);
+  renderPropsDiff(null);
   renderSplResult(null);
   renderInputsConfResult(null);
   renderHecResult(null, null);
   renderCimResult(null);
   renderVolumeResult(null);
+  lastLookupSkeleton = null;
+  renderLookupResult(null);
   resetRawEventOutputs();
 }
 
@@ -3402,6 +3733,26 @@ function init() {
     $('#volRetentionDays').value = '';
     renderVolumeResult(null);
   });
+  $('#diffPropsBtn').addEventListener('click', diffPropsConfHandler);
+  $('#clearPropsDiffBtn').addEventListener('click', () => {
+    $('#propsDiffBefore').value = '';
+    $('#propsDiffAfter').value = '';
+    renderPropsDiff(null);
+  });
+  $('#disambiguateDateBtn').addEventListener('click', disambiguateDateHandler);
+  $('#clearDateDisambiguatorBtn').addEventListener('click', () => {
+    $('#ambiguousDateInput').value = '';
+    renderDateDisambiguatorResult(null);
+  });
+  $('#ambiguousDateInput').addEventListener('keydown', e => { if(e.key === 'Enter') disambiguateDateHandler(); });
+  $('#generateLookupBtn').addEventListener('click', generateLookupHandler);
+  $('#downloadLookupBtn').addEventListener('click', downloadLookupCsv);
+  $('#clearLookupBtn').addEventListener('click', () => {
+    $('#lookupFieldName').value = '';
+    $('#lookupValues').value = '';
+    lastLookupSkeleton = null;
+    renderLookupResult(null);
+  });
   initThemeToggle();
 }
 
@@ -3475,6 +3826,12 @@ if(typeof module !== 'undefined' && module.exports) {
     CIM_DATA_MODELS,
     findCimFieldMatches,
     checkCimCompliance,
-    estimateIndexVolume
+    estimateIndexVolume,
+    detectEncodingIssues,
+    detectStackTrace,
+    diffPropsConf,
+    disambiguateDate,
+    csvEscape,
+    buildLookupSkeleton
   };
 }

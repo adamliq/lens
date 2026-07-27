@@ -47,10 +47,12 @@
       <a href="#line-break-detector">Line breaks</a>
       <a href="#reverseTimeFormatCard">Reverse TIME_FORMAT</a>
       <a href="#epoch-converter">Epoch converter</a>
+      <a href="#date-disambiguator">Date disambiguator</a>
       <a href="#raw-findings">Raw findings</a>
       <a href="#batch-consistency">Batch consistency</a>
       <a href="#regex-tester">Regex tester</a>
       <a href="#props-validator">props.conf validator</a>
+      <a href="#props-diff">props.conf diff</a>
       <a href="#ingestion-tools">Ingestion tools</a>
       <a href="#cim-compliance">CIM compliance</a>
       <a href="#volume-estimator">Volume estimator</a>
@@ -177,6 +179,7 @@ TIME_PREFIX =</pre>
             <pre>SHOULD_LINEMERGE =
 LINE_BREAKER =</pre>
           </div>
+          <div id="stackTraceResult" aria-live="polite" class="propsBox" hidden></div>
         </div>
       </div>
     </section>
@@ -259,6 +262,27 @@ LINE_BREAKER =</pre>
       </div>
     </section>
 
+    <section class="card" id="date-disambiguator">
+      <div class="cardHead">
+        <h2>Ambiguous Date Disambiguator</h2>
+        <p>For a slash/dot/dash-delimited date such as 03/04/2026, shows both the US (MM/DD) and EU/ISO (DD/MM) interpretations side by side.</p>
+      </div>
+      <div class="cardBody">
+        <div>
+          <label for="ambiguousDateInput">Date value</label>
+          <input id="ambiguousDateInput" placeholder="03/04/2026 14:30:00">
+        </div>
+        <div class="split">
+          <button class="primary" id="disambiguateDateBtn" type="button">Disambiguate</button>
+          <button class="ghost" id="clearDateDisambiguatorBtn" type="button">Clear</button>
+        </div>
+        <div id="dateDisambiguatorResult" aria-live="polite" class="detectBox info">
+          <div class="detectTitle">No date disambiguated yet</div>
+          <div class="detectNotes">Enter a slash/dot/dash-delimited date and select Disambiguate.</div>
+        </div>
+      </div>
+    </section>
+
     <section class="grid detectors" id="raw-findings">
       <div class="card">
         <div class="cardHead">
@@ -331,6 +355,7 @@ LINE_BREAKER =</pre>
             <div class="detectTitle">No raw event analysed yet</div>
             <div class="detectNotes">The raw event detector will summarise line break structure here.</div>
           </div>
+          <div id="rawStackTraceResult" aria-live="polite" class="propsBox" hidden></div>
         </div>
       </div>
 
@@ -348,6 +373,20 @@ LINE_BREAKER =</pre>
             <div class="detectTitle">Suggested props.conf lines</div>
             <div class="detectNotes">Analyse a raw event to generate suggested props.conf lines.</div>
           </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="cardHead">
+          <h2>Raw Event Encoding Check</h2>
+          <p>Flags byte order marks, mixed line endings, control characters, and invisible characters that commonly break regex-based parsing.</p>
+        </div>
+        <div class="cardBody">
+          <div id="encodingResult" aria-live="polite" class="detectBox info">
+            <div class="detectTitle">No raw event analysed yet</div>
+            <div class="detectNotes">The raw event detector will report encoding issues here.</div>
+          </div>
+          <div id="encodingIssueList" aria-live="polite" class="list"></div>
         </div>
       </div>
     </section>
@@ -444,6 +483,36 @@ timestamp=2026-07-09T14:31:02.901Z user=jsmith action=logout"></textarea>
       </div>
     </section>
 
+    <section class="card" id="props-diff">
+      <div class="cardHead">
+        <h2>props.conf Diff</h2>
+        <p>Paste two versions of a stanza (for example, before and after a vendor changed their log format) to see exactly which settings were added, removed, or changed.</p>
+      </div>
+      <div class="cardBody">
+        <div class="grid">
+          <div>
+            <label for="propsDiffBefore">Before</label>
+            <textarea id="propsDiffBefore" placeholder="TIME_FORMAT = %Y-%m-%d
+KV_MODE = auto"></textarea>
+          </div>
+          <div>
+            <label for="propsDiffAfter">After</label>
+            <textarea id="propsDiffAfter" placeholder="TIME_FORMAT = %Y-%m-%dT%H:%M:%S.%QZ
+LINE_BREAKER = ([\r\n]+)(?=\d{4}-\d{2}-\d{2})"></textarea>
+          </div>
+        </div>
+        <div class="split">
+          <button class="primary" id="diffPropsBtn" type="button">Compare</button>
+          <button class="ghost" id="clearPropsDiffBtn" type="button">Clear</button>
+        </div>
+        <div id="propsDiffResult" aria-live="polite" class="detectBox info">
+          <div class="detectTitle">No comparison run yet</div>
+          <div class="detectNotes">Paste a before and after stanza and select Compare.</div>
+        </div>
+        <div id="propsDiffList" aria-live="polite" class="list"></div>
+      </div>
+    </section>
+
     <section class="grid detectors" id="ingestion-tools">
       <div class="card">
         <div class="cardHead">
@@ -517,6 +586,34 @@ timestamp=2026-07-09T14:31:02.901Z user=jsmith action=logout"></textarea>
           <div id="hecResult" aria-live="polite" class="propsBox">
             <div class="detectTitle">HEC payload</div>
             <div class="detectNotes">Paste a raw event above and select Generate HEC payload.</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="cardHead">
+          <h2>Lookup CSV Generator</h2>
+          <p>Paste the distinct raw values seen for a field to generate a lookup.csv skeleton plus the matching transforms.conf/props.conf lines for value normalisation.</p>
+        </div>
+        <div class="cardBody">
+          <div>
+            <label for="lookupFieldName">Field name</label>
+            <input id="lookupFieldName" placeholder="action_code">
+          </div>
+          <div>
+            <label for="lookupValues">Distinct sample values (one per line, or comma-separated)</label>
+            <textarea id="lookupValues" placeholder="0
+1
+2"></textarea>
+          </div>
+          <div class="split">
+            <button class="primary" id="generateLookupBtn" type="button">Generate lookup skeleton</button>
+            <button class="ghost" id="downloadLookupBtn" type="button" disabled>Download lookup.csv</button>
+            <button class="ghost" id="clearLookupBtn" type="button">Clear</button>
+          </div>
+          <div id="lookupResult" aria-live="polite" class="propsBox">
+            <div class="detectTitle">Lookup skeleton</div>
+            <div class="detectNotes">Enter a field name and sample values, then select Generate lookup skeleton.</div>
           </div>
         </div>
       </div>
