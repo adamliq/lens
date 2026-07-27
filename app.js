@@ -1517,10 +1517,12 @@ function renderDetection(box, data, emptyTitle, emptyNote) {
   `;
 }
 
-function renderLogFormatResult(formatName, parseStatus, extracted) {
+function renderLogFormatResult(formatName, parseStatus, extracted, truncation) {
   const guidance = logFormatGuidance(formatName, parseStatus, extracted.length);
+  const notes = [guidance.notes?.join(' ') || ''];
+  if(truncation && truncation.looksTruncated) notes.push(`Possible truncation: ${truncation.reasons.join(' ')}`);
   renderDetection($('#logFormatResult'), {
-    cls: guidance.cls,
+    cls: truncation && truncation.looksTruncated && guidance.cls === 'good' ? 'warn' : guidance.cls,
     title: guidance.formatName,
     confidence: guidance.confidence + ' confidence',
     meta: [
@@ -1529,7 +1531,7 @@ function renderLogFormatResult(formatName, parseStatus, extracted) {
       ['Schema', guidance.schema]
     ],
     description: `SIEM status: ${guidance.siemStatus}. Validation: ${guidance.validation}.`,
-    notes: guidance.notes?.join(' ')
+    notes: notes.filter(Boolean).join(' ')
   }, 'No log format detected yet', 'Paste a raw event and select Detect log format.');
 }
 
@@ -1948,6 +1950,98 @@ function usernameExtractionGuidance(detection) {
   return found ? found[1] : na;
 }
 
+const IPV4_REGEX = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/;
+const IPV6_REGEX = /^(([0-9a-fA-F]{1,4}:){7}[0-9a-fA-F]{1,4}|([0-9a-fA-F]{1,4}:){1,7}:|([0-9a-fA-F]{1,4}:){1,6}:[0-9a-fA-F]{1,4}|([0-9a-fA-F]{1,4}:){1,5}(:[0-9a-fA-F]{1,4}){1,2}|([0-9a-fA-F]{1,4}:){1,4}(:[0-9a-fA-F]{1,4}){1,3}|([0-9a-fA-F]{1,4}:){1,3}(:[0-9a-fA-F]{1,4}){1,4}|([0-9a-fA-F]{1,4}:){1,2}(:[0-9a-fA-F]{1,4}){1,5}|[0-9a-fA-F]{1,4}:((:[0-9a-fA-F]{1,4}){1,6})|:((:[0-9a-fA-F]{1,4}){1,7}|:)|::(ffff(:0{1,4})?:)?((25[0-5]|(2[0-4]|1?[0-9])?[0-9])\.){3}(25[0-5]|(2[0-4]|1?[0-9])?[0-9])|([0-9a-fA-F]{1,4}:){1,4}:((25[0-5]|(2[0-4]|1?[0-9])?[0-9])\.){3}(25[0-5]|(2[0-4]|1?[0-9])?[0-9]))$/;
+
+function classifyIpv4Category(octets){
+  const [a,b] = octets;
+  if(a === 10) return 'Private (RFC 1918)';
+  if(a === 172 && b >= 16 && b <= 31) return 'Private (RFC 1918)';
+  if(a === 192 && b === 168) return 'Private (RFC 1918)';
+  if(a === 127) return 'Loopback';
+  if(a === 169 && b === 254) return 'Link-local (APIPA)';
+  if(a === 100 && b >= 64 && b <= 127) return 'Carrier-grade NAT (RFC 6598)';
+  if(a >= 224 && a <= 239) return 'Multicast';
+  if(a === 255 && octets[1] === 255 && octets[2] === 255 && octets[3] === 255) return 'Broadcast';
+  if(a === 0) return 'Unspecified / "this network" (RFC 791)';
+  return 'Public / globally routable (unless otherwise reserved)';
+}
+
+function classifyIpv6Category(addr){
+  const lower = addr.toLowerCase();
+  if(lower === '::1') return 'Loopback';
+  if(lower === '::') return 'Unspecified';
+  if(/^fe[89ab][0-9a-f]:/.test(lower)) return 'Link-local (fe80::/10)';
+  if(/^f[cd][0-9a-f]{2}:/.test(lower)) return 'Unique local (fc00::/7)';
+  if(/^ff/.test(lower)) return 'Multicast (ff00::/8)';
+  if(/^::ffff:/.test(lower)) return 'IPv4-mapped IPv6';
+  return 'Global / public (unless otherwise reserved)';
+}
+
+function classifyIpAddress(value){
+  const trimmed = String(value || '').trim();
+  if(!trimmed) return {valid:false, error:'Enter an IP address.'};
+  const slashIndex = trimmed.indexOf('/');
+  const addrPart = slashIndex >= 0 ? trimmed.slice(0, slashIndex) : trimmed;
+  const prefixPart = slashIndex >= 0 ? trimmed.slice(slashIndex + 1) : undefined;
+  if(slashIndex >= 0 && !prefixPart) return {valid:false, error:'CIDR prefix is missing after "/".'};
+
+  const v4Match = addrPart.match(IPV4_REGEX);
+  if(v4Match){
+    const octets = v4Match.slice(1,5).map(Number);
+    if(octets.some(o => o > 255)) return {valid:false, error:'IPv4 octets must be between 0 and 255.'};
+    let cidr = null;
+    if(prefixPart !== undefined){
+      if(!/^\d{1,2}$/.test(prefixPart) || Number(prefixPart) > 32) return {valid:false, error:'IPv4 CIDR prefix must be between 0 and 32.'};
+      cidr = Number(prefixPart);
+    }
+    return {
+      valid:true, version:'IPv4', address:addrPart, cidr, isCidr: cidr !== null,
+      category: classifyIpv4Category(octets),
+      normalised: cidr !== null ? `${addrPart}/${cidr}` : addrPart
+    };
+  }
+
+  if(IPV6_REGEX.test(addrPart)){
+    let cidr = null;
+    if(prefixPart !== undefined){
+      if(!/^\d{1,3}$/.test(prefixPart) || Number(prefixPart) > 128) return {valid:false, error:'IPv6 CIDR prefix must be between 0 and 128.'};
+      cidr = Number(prefixPart);
+    }
+    return {
+      valid:true, version:'IPv6', address:addrPart, cidr, isCidr: cidr !== null,
+      category: classifyIpv6Category(addrPart),
+      normalised: cidr !== null ? `${addrPart}/${cidr}` : addrPart
+    };
+  }
+
+  return {valid:false, error:'Not a recognised IPv4 or IPv6 address.'};
+}
+
+function findIpCandidates(raw, values={}){
+  const candidates = [];
+  const ipKey = /(^|[._-])(ip|ips|src_ip|source_ip|srcaddr|src_addr|dst_ip|dest_ip|dst_addr|dest_addr|dstaddr|client_ip|remote_addr|remote_ip|host|hostname|dvc|address|addr)($|[._-])/i;
+  const add = (value, key='sample') => {
+    if(value === null || value === undefined || value === '') return;
+    const text = String(value).trim();
+    if(!text || text.length > 60) return;
+    const detection = classifyIpAddress(text);
+    if(detection.valid) candidates.push({key, value:text, detection});
+  };
+  Object.entries(values || {}).forEach(([key,value]) => {
+    if(ipKey.test(key)) add(value, key);
+  });
+  const sample = String(raw || '').slice(0,8000);
+  const rawPatterns = [
+    /\b(?:\d{1,3}\.){3}\d{1,3}(?:\/\d{1,2})?\b/g,
+    /\b(?:[0-9a-fA-F]{1,4}:){2,7}[0-9a-fA-F]{0,4}(?:\/\d{1,3})?\b/g
+  ];
+  rawPatterns.forEach(re => {
+    (sample.match(re) || []).forEach(v => add(v, 'raw text'));
+  });
+  return candidates.filter((c, idx, arr) => arr.findIndex(x => x.value === c.value) === idx);
+}
+
 function renderUsernameResult(target, detection) {
   const ambiguity = detection?.alternatives?.length
     ? ` Also matched: ${detection.alternatives.map(x => x.name).join(', ')}. Returning the first match by spreadsheet precedence.`
@@ -1970,6 +2064,53 @@ function renderUsernameResult(target, detection) {
     description: '',
     notes: `${detection.notes || ''}${split.note ? ' ' + split.note : ''}${ambiguity}`
   } : null, 'No username detected yet', 'Paste one username, principal, account ID, or SAML NameID Format URN and select Detect username.');
+}
+
+function renderIpResult(target, detection) {
+  if(!detection){
+    renderDetection(target, null, 'No IP address detected yet', 'Paste an IPv4 or IPv6 address and select Detect IP address.');
+    return;
+  }
+  if(!detection.valid){
+    renderValidationWarning(target, detection.error);
+    return;
+  }
+  renderDetection(target, {
+    cls: 'good',
+    title: detection.normalised,
+    confidence: detection.version,
+    meta: [
+      ['Category', detection.category],
+      ['CIDR notation', detection.isCidr ? 'Yes' : 'No']
+    ]
+  }, '', '');
+}
+
+function detectStandaloneIp() {
+  const value = $('#sampleIpAddress').value.trim();
+  if(!value) { renderValidationWarning($('#ipResult'), 'Paste an IP address first.'); return; }
+  renderIpResult($('#ipResult'), classifyIpAddress(value));
+}
+
+function renderRawIpFindings(raw, values) {
+  const candidates = findIpCandidates(raw, values);
+  if(!candidates.length) {
+    renderDetection($('#rawIpResult'), {
+      cls:'warn', title:'No IP address found in raw event', confidence:'Not detected',
+      notes:'No IPv4/IPv6-like value matched the detector patterns.'
+    }, '', '');
+    $('#ipCandidates').innerHTML = '';
+    return;
+  }
+  const preferred = candidates.find(c => /^src|source/i.test(c.key)) || candidates[0];
+  renderIpResult($('#rawIpResult'), preferred.detection);
+  $('#ipCandidates').innerHTML = candidates.slice(0,20).map(c => `
+    <div class="item">
+      <strong>${esc(c.key)}: <code>${esc(c.value)}</code></strong>
+      <span class="small">${esc(c.detection.version)} | ${esc(c.detection.category)}</span>
+    </div>
+  `).join('');
+  if(!$('#sampleIpAddress').value) $('#sampleIpAddress').value = preferred.value;
 }
 
 function detectRawFormat(raw) {
@@ -2077,6 +2218,44 @@ function suggestFieldExtraction(detected, raw, values={}, extracted=[]){
     ['Document the field layout from real samples and write explicit EXTRACT/REPORT transforms once the schema is confirmed.']);
 }
 
+function buildCimFieldAliases(extracted=[]){
+  const matches = REQUIRED_FIELDS
+    .map(row => ({row, hits: findFields(extracted, row.names, row.id)}))
+    .filter(x => x.hits.length);
+  const lines = matches.map(({row, hits}) => `FIELDALIAS-${row.id} = ${hits[0]} AS ${row.id}`);
+  return {matches, lines};
+}
+
+function combineFieldExtractionWithCim(fieldExtraction, cimAliases){
+  if(!cimAliases || !cimAliases.lines.length) return fieldExtraction;
+  const propsConf = [fieldExtraction.propsConf, ...cimAliases.lines].filter(Boolean).join('\n');
+  const notes = [
+    ...(fieldExtraction.notes || []),
+    `${cimAliases.lines.length} CIM field alias suggestion(s) added based on matched required-field categories (${cimAliases.matches.map(m => m.row.category).join(', ')}).`
+  ];
+  return {...fieldExtraction, propsConf, notes};
+}
+
+function detectTruncationRisk(raw){
+  const trimmed = String(raw || '').trim();
+  if(!trimmed) return {looksTruncated:false, reasons:[]};
+  const reasons = [];
+  const countChar = ch => (trimmed.split(ch).length - 1);
+
+  if(/^[\[{]/.test(trimmed)){
+    const openBraces = countChar('{'), closeBraces = countChar('}');
+    const openBrackets = countChar('['), closeBrackets = countChar(']');
+    const quoteCount = (trimmed.match(/(?<!\\)"/g) || []).length;
+    if(openBraces !== closeBraces) reasons.push(`Unbalanced curly braces (${openBraces} "{" vs ${closeBraces} "}").`);
+    if(openBrackets !== closeBrackets) reasons.push(`Unbalanced square brackets (${openBrackets} "[" vs ${closeBrackets} "]").`);
+    if(quoteCount % 2 !== 0) reasons.push(`Odd number of unescaped double quotes (${quoteCount}), suggesting a truncated string value.`);
+    if(!/[\]}]$/.test(trimmed)) reasons.push('Sample does not end with a closing "}" or "]".');
+  }
+  if(/[,:]\s*$/.test(trimmed)) reasons.push('Sample ends with a trailing comma or colon, suggesting the event was cut off mid-field.');
+
+  return {looksTruncated: reasons.length > 0, reasons};
+}
+
 function buildPropsConfBundle(state={}){
   const sourcetype = state.sourcetypeName || 'custom:sourcetype';
   const lines = [`[${sourcetype}]`];
@@ -2089,6 +2268,121 @@ function buildPropsConfBundle(state={}){
   if(lb.lineBreaker) lines.push(`LINE_BREAKER = ${lb.lineBreaker}`);
   const extraction = state.fieldExtraction || {};
   if(extraction.propsConf) lines.push(...extraction.propsConf.split('\n').filter(Boolean));
+  return lines.join('\n') + '\n';
+}
+
+function buildRawEventReport(raw){
+  const trimmed = String(raw || '').trim();
+  if(!trimmed) return null;
+
+  const result = detectRawFormat(trimmed);
+  const guidance = logFormatGuidance(result.detected, result.parseStatus, result.extracted.length);
+  const truncation = detectTruncationRisk(trimmed);
+
+  const timestampCandidates = findTimestampCandidates(trimmed, result.values);
+  const preferredTimestamp = timestampCandidates.find(c => /event|created|occurred|timecreated|utctime|timestamp/i.test(c.key) && !/@timestamp|_time|index|ingest|received/i.test(c.key)) || timestampCandidates[0] || null;
+
+  const usernameCandidates = findUsernameCandidates(trimmed, result.values);
+  const preferredUsername = usernameCandidates.find(c => /user|principal|upn|account|identity|nameid/i.test(c.key)) || usernameCandidates[0] || null;
+
+  const ipCandidates = findIpCandidates(trimmed, result.values);
+  const preferredIp = ipCandidates.find(c => /^src|source/i.test(c.key)) || ipCandidates[0] || null;
+
+  const lineBreak = detectLineBreakFormat(trimmed);
+  const sourcetypeName = suggestSourcetypeName(result.detected, result.values);
+  const cimAliases = buildCimFieldAliases(result.extracted);
+  const fieldExtraction = combineFieldExtractionWithCim(suggestFieldExtraction(result.detected, trimmed, result.values, result.extracted), cimAliases);
+  const categoryMatches = REQUIRED_FIELDS
+    .map(row => ({row, hits: findFields(result.extracted, row.names, row.id)}))
+    .filter(x => x.hits.length)
+    .map(x => ({category: x.row.category, fields: x.hits}));
+
+  return {
+    raw: trimmed,
+    generatedAt: new Date().toISOString(),
+    logFormat: {detected: result.detected, parseStatus: result.parseStatus, guidance},
+    truncation,
+    sourcetypeName,
+    timestamp: preferredTimestamp ? {value: preferredTimestamp.value, ...preferredTimestamp.detection} : null,
+    username: preferredUsername ? {value: preferredUsername.value, ...preferredUsername.detection} : null,
+    ip: preferredIp ? {value: preferredIp.value, ...preferredIp.detection} : null,
+    lineBreak,
+    extractedFields: result.extracted,
+    categoryMatches,
+    fieldExtraction
+  };
+}
+
+function buildAnalysisReportMarkdown(report){
+  if(!report) return '';
+  const lines = [];
+  lines.push('# LENS Analysis Report');
+  lines.push('');
+  lines.push(`Generated: ${report.generatedAt}`);
+  lines.push('');
+  lines.push('## Raw Event Sample');
+  lines.push('```');
+  lines.push(report.raw);
+  lines.push('```');
+  lines.push('');
+  lines.push('## Log Format');
+  lines.push(`- Detected format: ${report.logFormat.detected || 'Unknown'}`);
+  lines.push(`- Confidence: ${report.logFormat.guidance.confidence}`);
+  lines.push(`- Suggested sourcetype: \`${report.sourcetypeName}\``);
+  lines.push(`- Splunk handling: ${report.logFormat.guidance.splunk}`);
+  lines.push(`- Validation: ${report.logFormat.guidance.validation}`);
+  if(report.truncation.looksTruncated){
+    lines.push(`- **Possible truncation detected**: ${report.truncation.reasons.join(' ')}`);
+  }
+  lines.push('');
+  lines.push('## Timestamp');
+  if(report.timestamp){
+    lines.push(`- Value: \`${report.timestamp.value}\``);
+    lines.push(`- Format: ${report.timestamp.formatName}`);
+    lines.push(`- Splunk TIME_FORMAT: \`${report.timestamp.timeFormat}\``);
+    lines.push(`- Timezone: ${report.timestamp.timezone} (${report.timestamp.utcStatus})`);
+  } else {
+    lines.push('- No timestamp detected.');
+  }
+  lines.push('');
+  lines.push('## Username / Principal');
+  if(report.username){
+    lines.push(`- Value: \`${report.username.value}\``);
+    lines.push(`- Format: ${report.username.formatName} (${report.username.category})`);
+  } else {
+    lines.push('- No username detected.');
+  }
+  lines.push('');
+  lines.push('## IP / Network Address');
+  if(report.ip){
+    lines.push(`- Value: \`${report.ip.value}\``);
+    lines.push(`- Version: ${report.ip.version} | Category: ${report.ip.category}`);
+  } else {
+    lines.push('- No IP address detected.');
+  }
+  lines.push('');
+  lines.push('## Line Breaking');
+  lines.push(`- SHOULD_LINEMERGE: ${report.lineBreak.shouldLineMerge}`);
+  lines.push(`- LINE_BREAKER: \`${report.lineBreak.lineBreaker || ''}\``);
+  lines.push('');
+  lines.push('## Extracted Fields');
+  lines.push(report.extractedFields.length ? report.extractedFields.map(f => `\`${f}\``).join(', ') : '_None extracted._');
+  lines.push('');
+  lines.push('## Likely SIEM / CIM Categories');
+  if(report.categoryMatches.length){
+    report.categoryMatches.forEach(m => lines.push(`- **${m.category}**: ${m.fields.join(', ')}`));
+  } else {
+    lines.push('_No category matches._');
+  }
+  lines.push('');
+  lines.push('## Suggested props.conf');
+  lines.push('```');
+  lines.push(`[${report.sourcetypeName}]`);
+  if(report.timestamp && report.timestamp.timeFormat) lines.push(`TIME_FORMAT = ${report.timestamp.timeFormat}`);
+  lines.push(`SHOULD_LINEMERGE = ${report.lineBreak.shouldLineMerge}`);
+  if(report.lineBreak.lineBreaker) lines.push(`LINE_BREAKER = ${report.lineBreak.lineBreaker}`);
+  if(report.fieldExtraction.propsConf) lines.push(report.fieldExtraction.propsConf);
+  lines.push('```');
   return lines.join('\n') + '\n';
 }
 
@@ -2274,18 +2568,36 @@ function downloadPropsConf() {
   URL.revokeObjectURL(url);
 }
 
+function downloadReport() {
+  const raw = $('#sampleRawEvent').value.trim();
+  if(!raw) { renderValidationWarning($('#logFormatResult'), 'Paste a sample raw event first.'); return; }
+  const markdown = buildAnalysisReportMarkdown(buildRawEventReport(raw));
+  const blob = new Blob([markdown], {type:'text/markdown'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'lens-analysis-report.md';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
 function analyseRawEvent() {
   const raw = $('#sampleRawEvent').value.trim();
   if(!raw) { renderValidationWarning($('#logFormatResult'), 'Paste a sample raw event first.'); return; }
   const result = detectRawFormat(raw);
-  renderLogFormatResult(result.detected, result.parseStatus, result.extracted);
+  const truncation = detectTruncationRisk(raw);
+  renderLogFormatResult(result.detected, result.parseStatus, result.extracted, truncation);
   renderExtractedFields(result.extracted);
   renderRawTimestampFindings(raw, result.values);
   renderRawUsernameFindings(raw, result.values);
+  renderRawIpFindings(raw, result.values);
   renderRawLineBreakFindings(raw);
 
   const sourcetypeName = suggestSourcetypeName(result.detected, result.values);
-  const fieldExtraction = suggestFieldExtraction(result.detected, raw, result.values, result.extracted);
+  const cimAliases = buildCimFieldAliases(result.extracted);
+  const fieldExtraction = combineFieldExtractionWithCim(suggestFieldExtraction(result.detected, raw, result.values, result.extracted), cimAliases);
   renderFieldExtractionSuggestion(sourcetypeName, fieldExtraction);
 
   const timestampCandidate = findTimestampCandidates(raw, result.values)[0] || null;
@@ -2312,6 +2624,8 @@ function analyseRawEvent() {
   };
   const downloadBtn = $('#downloadPropsBtn');
   if(downloadBtn) downloadBtn.disabled = false;
+  const downloadReportBtn = $('#downloadReportBtn');
+  if(downloadReportBtn) downloadReportBtn.disabled = false;
 }
 
 function detectStandaloneTimestamp() {
@@ -2438,20 +2752,25 @@ function resetRawEventOutputs() {
   renderDetection($('#logFormatResult'), null, 'No log format detected yet', 'Paste a raw event and select Detect log format.');
   renderDetection($('#rawTimestampResult'), null, 'No raw event analysed yet', 'The raw event detector will list timestamp candidates here.');
   renderDetection($('#rawUsernameResult'), null, 'No raw event analysed yet', 'The raw event detector will list username candidates here.');
+  renderDetection($('#rawIpResult'), null, 'No raw event analysed yet', 'The raw event detector will list IP address candidates here.');
   renderDetection($('#rawLineBreakResult'), null, 'No raw event analysed yet', 'The raw event detector will summarise line break structure here.');
   $('#timestampCandidates').innerHTML = '';
   $('#usernameCandidates').innerHTML = '';
+  $('#ipCandidates').innerHTML = '';
   renderExtractedFields([]);
   renderFieldExtractionSuggestion('custom:sourcetype', {title:'No raw event analysed yet', cls:'info', propsConf:'', notes:['Analyse a raw event to generate an extraction suggestion.']});
   lastAnalysis = null;
   const downloadBtn = $('#downloadPropsBtn');
   if(downloadBtn) downloadBtn.disabled = true;
+  const downloadReportBtn = $('#downloadReportBtn');
+  if(downloadReportBtn) downloadReportBtn.disabled = true;
 }
 
 function resetAll() {
   $('#sampleRawEvent').value = '';
   $('#sampleDateTime').value = '';
   $('#sampleUsername').value = '';
+  $('#sampleIpAddress').value = '';
   $('#sampleLineBreak').value = '';
   $('#sampleSplunkTimeFormat').value = '';
   $('#batchEventsInput').value = '';
@@ -2465,6 +2784,7 @@ function resetAll() {
   renderPropsConfSuggestion(null);
   renderReverseTimeFormatResult(null);
   renderDetection($('#usernameResult'), null, 'No username detected yet', 'Paste one username, principal, account ID, or SAML NameID Format URN and select Detect username.');
+  renderIpResult($('#ipResult'), null);
   renderLineBreakResult($('#lineBreakResult'), null);
   renderLineBreakPropsSuggestion(null);
   renderBatchConsistency(null);
@@ -2483,8 +2803,10 @@ function init() {
   $('#detectTimestampBtn').addEventListener('click', detectStandaloneTimestamp);
   $('#reverseTimeFormatBtn').addEventListener('click', detectReverseTimeFormat);
   $('#detectUsernameBtn').addEventListener('click', detectStandaloneUsername);
+  $('#detectIpBtn').addEventListener('click', detectStandaloneIp);
   $('#detectLineBreakBtn').addEventListener('click', detectStandaloneLineBreak);
   $('#downloadPropsBtn').addEventListener('click', downloadPropsConf);
+  $('#downloadReportBtn').addEventListener('click', downloadReport);
   $('#checkBatchBtn').addEventListener('click', checkBatchConsistencyHandler);
   $('#clearBatchBtn').addEventListener('click', () => {
     $('#batchEventsInput').value = '';
@@ -2536,6 +2858,11 @@ function init() {
     $('#sampleUsername').value='';
     renderDetection($('#usernameResult'), null, 'No username detected yet', 'Paste one username, principal, account ID, or SAML NameID Format URN and select Detect username.');
   });
+  $('#clearIpBtn').addEventListener('click', () => {
+    $('#sampleIpAddress').value='';
+    renderIpResult($('#ipResult'), null);
+  });
+  $('#sampleIpAddress').addEventListener('keydown', e => { if(e.key === 'Enter') detectStandaloneIp(); });
   $('#clearLineBreakBtn').addEventListener('click', () => {
     $('#sampleLineBreak').value='';
     renderLineBreakResult($('#lineBreakResult'), null);
@@ -2555,6 +2882,24 @@ function init() {
   $('#sampleDateTime').addEventListener('keydown', e => { if(e.key === 'Enter') detectStandaloneTimestamp(); });
   $('#sampleSplunkTimeFormat').addEventListener('keydown', e => { if(e.key === 'Enter') detectReverseTimeFormat(); });
   $('#sampleUsername').addEventListener('keydown', e => { if(e.key === 'Enter') detectStandaloneUsername(); });
+  initThemeToggle();
+}
+
+function initThemeToggle() {
+  const btn = $('#themeToggleBtn');
+  if(!btn) return;
+  const root = document.documentElement;
+  const apply = theme => {
+    root.setAttribute('data-theme', theme);
+    btn.textContent = theme === 'light' ? 'Dark mode' : 'Light mode';
+    btn.setAttribute('aria-pressed', theme === 'light' ? 'true' : 'false');
+  };
+  const prefersLight = typeof window.matchMedia === 'function' && window.matchMedia('(prefers-color-scheme: light)').matches;
+  apply(prefersLight ? 'light' : 'dark');
+  btn.addEventListener('click', () => {
+    const current = root.getAttribute('data-theme') === 'light' ? 'light' : 'dark';
+    apply(current === 'light' ? 'dark' : 'light');
+  });
 }
 
 if(typeof document !== 'undefined') {
@@ -2590,6 +2935,13 @@ if(typeof module !== 'undefined' && module.exports) {
     runRegexTest,
     buildHighlightedText,
     epochToDate,
-    dateToEpoch
+    dateToEpoch,
+    classifyIpAddress,
+    findIpCandidates,
+    buildCimFieldAliases,
+    combineFieldExtractionWithCim,
+    detectTruncationRisk,
+    buildRawEventReport,
+    buildAnalysisReportMarkdown
   };
 }
