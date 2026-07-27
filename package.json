@@ -1,0 +1,8 @@
+{
+  "name": "lens",
+  "private": true,
+  "description": "LENS - Log Event Normalisation Scanner",
+  "scripts": {
+    "test": "node --test"
+  }
+}
