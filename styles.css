@@ -26,7 +26,7 @@ main { max-width:1180px; margin:0 auto; padding:22px; display:grid; gap:16px; }
 .cardHead p { margin-top:4px; font-size:14px; }
 .cardBody { padding:18px; display:grid; gap:12px; }
 label { display:block; font-size:12px; font-weight:800; color:#cbd5e1; margin:0 0 6px; }
-textarea,input { width:100%; min-height:44px; background:var(--input); border:1px solid #334155; color:var(--ink); border-radius:11px; padding:10px 11px; font:inherit; }
+textarea,input,select { width:100%; min-height:44px; background:var(--input); border:1px solid #334155; color:var(--ink); border-radius:11px; padding:10px 11px; font:inherit; }
 textarea { min-height:210px; resize:vertical; }
 input::placeholder, textarea::placeholder { color:#64748b; }
 .toolbar,.split { display:flex; gap:8px; flex-wrap:wrap; align-items:center; }

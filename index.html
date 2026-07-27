@@ -44,6 +44,7 @@
       <a href="#username-detector">Username</a>
       <a href="#line-break-detector">Line breaks</a>
       <a href="#reverseTimeFormatCard">Reverse TIME_FORMAT</a>
+      <a href="#epoch-converter">Epoch converter</a>
       <a href="#raw-findings">Raw findings</a>
       <a href="#batch-consistency">Batch consistency</a>
       <a href="#regex-tester">Regex tester</a>
@@ -171,6 +172,62 @@ LINE_BREAKER =</pre>
           <div class="detectNotes">Paste a format string such as <strong>%Y-%m-%dT%H:%M:%S.%QZ</strong> and select Lookup TIME_FORMAT.</div>
         </div>
         <div id="reverseTimeFormatMatches" aria-live="polite" class="list"></div>
+      </div>
+    </section>
+
+    <section class="grid detectors" id="epoch-converter">
+      <div class="card">
+        <div class="cardHead">
+          <h2>Epoch &rarr; Date/Time</h2>
+          <p>Converts a Unix epoch value (seconds, milliseconds, microseconds, or nanoseconds) to UTC.</p>
+        </div>
+        <div class="cardBody">
+          <div>
+            <label for="epochInput">Epoch value</label>
+            <input id="epochInput" placeholder="1783607445123">
+          </div>
+          <div>
+            <label for="epochUnit">Unit</label>
+            <select id="epochUnit">
+              <option value="auto">Auto-detect from digit count</option>
+              <option value="seconds">Seconds</option>
+              <option value="milliseconds">Milliseconds</option>
+              <option value="microseconds">Microseconds</option>
+              <option value="nanoseconds">Nanoseconds</option>
+            </select>
+          </div>
+          <div class="split">
+            <button class="primary" id="convertEpochBtn" type="button">Convert to date/time</button>
+            <button class="ghost" id="epochNowBtn" type="button">Now</button>
+            <button class="ghost" id="clearEpochBtn" type="button">Clear</button>
+          </div>
+          <div id="epochToDateResult" aria-live="polite" class="detectBox info">
+            <div class="detectTitle">No epoch value converted yet</div>
+            <div class="detectNotes">Enter an epoch value and select Convert to date/time.</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="cardHead">
+          <h2>Date/Time &rarr; Epoch</h2>
+          <p>Converts an ISO 8601 or similar date/time value to Unix epoch seconds, milliseconds, microseconds, and nanoseconds.</p>
+        </div>
+        <div class="cardBody">
+          <div>
+            <label for="dateTimeInput">Date/time value</label>
+            <input id="dateTimeInput" placeholder="2026-07-09T14:30:45.123Z">
+          </div>
+          <div class="split">
+            <button class="primary" id="convertDateBtn" type="button">Convert to epoch</button>
+            <button class="ghost" id="dateNowBtn" type="button">Now</button>
+            <button class="ghost" id="clearDateBtn" type="button">Clear</button>
+          </div>
+          <div id="dateToEpochResult" aria-live="polite" class="detectBox info">
+            <div class="detectTitle">No date/time converted yet</div>
+            <div class="detectNotes">Enter a date/time value and select Convert to epoch.</div>
+          </div>
+        </div>
       </div>
     </section>
 

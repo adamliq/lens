@@ -1436,6 +1436,65 @@ function detectReverseTimeFormat() {
   renderReverseTimeFormatResult(reverseLookupTimeFormat(value));
 }
 
+function renderEpochToDateResult(result) {
+  const box = $('#epochToDateResult');
+  if(!result) {
+    renderDetection(box, null, 'No epoch value converted yet', 'Enter an epoch value and select Convert to date/time.');
+    return;
+  }
+  if(!result.valid) {
+    renderValidationWarning(box, result.error);
+    return;
+  }
+  renderDetection(box, {
+    cls: 'good',
+    title: result.iso,
+    confidence: `${result.unit} precision`,
+    meta: [
+      ['Day of week (UTC)', result.dayOfWeek],
+      ['Unix seconds', String(result.unixSeconds)],
+      ['Unix milliseconds', String(result.unixMillis)],
+      ['Splunk TIME_FORMAT', result.splunkTimeFormat]
+    ]
+  }, '', '');
+}
+
+function convertEpochToDate() {
+  const value = $('#epochInput').value;
+  const unit = $('#epochUnit').value;
+  if(!String(value || '').trim()) { renderValidationWarning($('#epochToDateResult'), 'Enter an epoch value first.'); return; }
+  renderEpochToDateResult(epochToDate(value, unit));
+}
+
+function renderDateToEpochResult(result) {
+  const box = $('#dateToEpochResult');
+  if(!result) {
+    renderDetection(box, null, 'No date/time converted yet', 'Enter a date/time value and select Convert to epoch.');
+    return;
+  }
+  if(!result.valid) {
+    renderValidationWarning(box, result.error);
+    return;
+  }
+  renderDetection(box, {
+    cls: 'good',
+    title: `${result.unixSeconds} sec / ${result.unixMillis} ms`,
+    confidence: result.dayOfWeek,
+    meta: [
+      ['ISO 8601 (UTC)', result.iso],
+      ['Unix microseconds', String(result.unixMicros)],
+      ['Unix nanoseconds', String(result.unixNanos)]
+    ],
+    notes: result.timezoneNote
+  }, '', '');
+}
+
+function convertDateToEpoch() {
+  const value = $('#dateTimeInput').value;
+  if(!String(value || '').trim()) { renderValidationWarning($('#dateToEpochResult'), 'Enter a date/time value first.'); return; }
+  renderDateToEpochResult(dateToEpoch(value));
+}
+
 function renderValidationWarning(box, message) {
   box.className = 'detectBox warn';
   box.innerHTML = `<div class="detectTitle">${esc(message)}</div>`;
@@ -1547,6 +1606,83 @@ function detectTimestampInput(value) {
     example: preferred.value,
     originalInput: raw,
     timePrefix
+  };
+}
+
+const WEEKDAYS = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
+
+function epochToDate(value, unit='auto'){
+  const trimmed = String(value ?? '').trim();
+  if(!trimmed) return {valid:false, error:'Enter an epoch value.'};
+  if(!/^-?\d+(\.\d+)?$/.test(trimmed)) return {valid:false, error:'Epoch value must be numeric (digits only, with an optional decimal fraction).'};
+
+  const isFloat = trimmed.includes('.');
+  const digitCount = trimmed.replace(/^-/,'').split('.')[0].length;
+  let resolvedUnit = unit;
+  if(unit === 'auto'){
+    if(isFloat || digitCount <= 10) resolvedUnit = 'seconds';
+    else if(digitCount <= 13) resolvedUnit = 'milliseconds';
+    else if(digitCount <= 16) resolvedUnit = 'microseconds';
+    else resolvedUnit = 'nanoseconds';
+  }
+
+  const num = Number(trimmed);
+  if(!Number.isFinite(num)) return {valid:false, error:'Epoch value is out of range.'};
+
+  const msPerUnit = {seconds:1000, milliseconds:1, microseconds:1/1000, nanoseconds:1/1e6};
+  if(!msPerUnit[resolvedUnit]) return {valid:false, error:`Unknown unit: ${resolvedUnit}.`};
+  const ms = num * msPerUnit[resolvedUnit];
+
+  const date = new Date(ms);
+  if(Number.isNaN(date.getTime())) return {valid:false, error:'Epoch value is out of the representable date range.'};
+
+  const splunkTimeFormat = resolvedUnit === 'seconds' ? '%s'
+    : resolvedUnit === 'milliseconds' ? '%s%Q'
+    : `Custom conversion required (${resolvedUnit})`;
+
+  return {
+    valid:true,
+    unit: resolvedUnit,
+    ms,
+    iso: date.toISOString(),
+    unixSeconds: Math.floor(ms/1000),
+    unixMillis: Math.round(ms),
+    dayOfWeek: WEEKDAYS[date.getUTCDay()],
+    splunkTimeFormat
+  };
+}
+
+function dateToEpoch(value){
+  const trimmed = String(value || '').trim();
+  if(!trimmed) return {valid:false, error:'Enter a date/time value.'};
+
+  const hasZoneMarker = /(Z|UTC|GMT)$/i.test(trimmed) || /[+-]\d{2}:?\d{2}$/.test(trimmed);
+  const isoLike = /^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}(:\d{2}(\.\d+)?)?$/.test(trimmed);
+  let date, timezoneNote;
+
+  if(hasZoneMarker){
+    date = new Date(trimmed);
+    timezoneNote = 'Explicit timezone/offset detected and used.';
+  } else if(isoLike){
+    date = new Date(trimmed.replace(' ','T') + 'Z');
+    timezoneNote = 'No timezone specified; interpreted as UTC.';
+  } else {
+    date = new Date(trimmed);
+    timezoneNote = 'No timezone specified and the format is not ISO-like; interpreted using the local system timezone, which may be inaccurate. Prefer an ISO 8601 value.';
+  }
+
+  if(Number.isNaN(date.getTime())) return {valid:false, error:'Could not parse this as a date/time. Try an ISO 8601 value such as 2026-07-09T14:30:45Z.'};
+
+  const ms = date.getTime();
+  return {
+    valid:true,
+    timezoneNote,
+    iso: date.toISOString(),
+    unixSeconds: Math.floor(ms/1000),
+    unixMillis: ms,
+    unixMicros: ms*1000,
+    unixNanos: ms*1e6,
+    dayOfWeek: WEEKDAYS[date.getUTCDay()]
   };
 }
 
@@ -2322,6 +2458,9 @@ function resetAll() {
   $('#regexPattern').value = '';
   $('#regexFlags').value = '';
   $('#regexTestString').value = '';
+  $('#epochInput').value = '';
+  $('#epochUnit').value = 'auto';
+  $('#dateTimeInput').value = '';
   renderDetection($('#timestampResult'), null, 'No timestamp detected yet', 'Paste one timestamp and select Detect timestamp.');
   renderPropsConfSuggestion(null);
   renderReverseTimeFormatResult(null);
@@ -2330,6 +2469,8 @@ function resetAll() {
   renderLineBreakPropsSuggestion(null);
   renderBatchConsistency(null);
   renderRegexTest(null);
+  renderEpochToDateResult(null);
+  renderDateToEpochResult(null);
   resetRawEventOutputs();
 }
 
@@ -2356,6 +2497,28 @@ function init() {
     $('#regexTestString').value = '';
     renderRegexTest(null);
   });
+  $('#convertEpochBtn').addEventListener('click', convertEpochToDate);
+  $('#epochNowBtn').addEventListener('click', () => {
+    $('#epochInput').value = String(Date.now());
+    $('#epochUnit').value = 'milliseconds';
+    convertEpochToDate();
+  });
+  $('#clearEpochBtn').addEventListener('click', () => {
+    $('#epochInput').value = '';
+    $('#epochUnit').value = 'auto';
+    renderEpochToDateResult(null);
+  });
+  $('#convertDateBtn').addEventListener('click', convertDateToEpoch);
+  $('#dateNowBtn').addEventListener('click', () => {
+    $('#dateTimeInput').value = new Date().toISOString();
+    convertDateToEpoch();
+  });
+  $('#clearDateBtn').addEventListener('click', () => {
+    $('#dateTimeInput').value = '';
+    renderDateToEpochResult(null);
+  });
+  $('#epochInput').addEventListener('keydown', e => { if(e.key === 'Enter') convertEpochToDate(); });
+  $('#dateTimeInput').addEventListener('keydown', e => { if(e.key === 'Enter') convertDateToEpoch(); });
   $('#clearRawBtn').addEventListener('click', () => {
     $('#sampleRawEvent').value='';
     resetRawEventOutputs();
@@ -2425,6 +2588,8 @@ if(typeof module !== 'undefined' && module.exports) {
     buildPropsConfBundle,
     checkBatchConsistency,
     runRegexTest,
-    buildHighlightedText
+    buildHighlightedText,
+    epochToDate,
+    dateToEpoch
   };
 }
