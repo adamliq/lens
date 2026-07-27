@@ -50,6 +50,10 @@
       <a href="#raw-findings">Raw findings</a>
       <a href="#batch-consistency">Batch consistency</a>
       <a href="#regex-tester">Regex tester</a>
+      <a href="#props-validator">props.conf validator</a>
+      <a href="#ingestion-tools">Ingestion tools</a>
+      <a href="#cim-compliance">CIM compliance</a>
+      <a href="#volume-estimator">Volume estimator</a>
       <a href="#timestamp-reference">Timestamp reference</a>
       <a href="#username-reference">Username reference</a>
     </nav>
@@ -403,6 +407,176 @@ LINE_BREAKER =</pre>
         <div>
           <label>Highlighted matches</label>
           <div id="regexHighlighted" aria-live="polite" class="highlightBox"></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="card" id="props-validator">
+      <div class="cardHead">
+        <h2>props.conf Validator</h2>
+        <p>Paste an existing props.conf stanza and a sample event to check whether TIME_FORMAT, LINE_BREAKER, EXTRACT, KV_MODE, and other settings actually work against it.</p>
+      </div>
+      <div class="cardBody">
+        <div class="grid">
+          <div>
+            <label for="propsConfInput">props.conf stanza</label>
+            <textarea id="propsConfInput" placeholder="TIME_FORMAT = %Y-%m-%dT%H:%M:%S.%QZ
+TIME_PREFIX = timestamp=
+LINE_BREAKER = ([\r\n]+)(?=timestamp=)
+EXTRACT-user = user=(?&lt;user&gt;\S+)
+KV_MODE = auto"></textarea>
+          </div>
+          <div>
+            <label for="propsConfSample">Sample event(s)</label>
+            <textarea id="propsConfSample" placeholder="timestamp=2026-07-09T14:30:45.123Z user=jsmith action=login
+timestamp=2026-07-09T14:31:02.901Z user=jsmith action=logout"></textarea>
+          </div>
+        </div>
+        <div class="split">
+          <button class="primary" id="validatePropsBtn" type="button">Validate</button>
+          <button class="ghost" id="clearPropsValidatorBtn" type="button">Clear</button>
+        </div>
+        <div id="propsValidatorResult" aria-live="polite" class="detectBox info">
+          <div class="detectTitle">No stanza validated yet</div>
+          <div class="detectNotes">Paste a props.conf stanza and a sample event and select Validate.</div>
+        </div>
+        <div id="propsValidatorChecks" aria-live="polite" class="list"></div>
+      </div>
+    </section>
+
+    <section class="grid detectors" id="ingestion-tools">
+      <div class="card">
+        <div class="cardHead">
+          <h2>SPL Search Generator</h2>
+          <p>Generates starter searches to confirm a new sourcetype is ingesting correctly, once props.conf is deployed.</p>
+        </div>
+        <div class="cardBody">
+          <div class="grid">
+            <div>
+              <label for="splIndex">Index</label>
+              <input id="splIndex" placeholder="main">
+            </div>
+            <div>
+              <label for="splSourcetype">Sourcetype</label>
+              <input id="splSourcetype" placeholder="custom:sourcetype">
+            </div>
+          </div>
+          <div class="split">
+            <button class="ghost" id="splUseAnalysisBtn" type="button">Use last raw event analysis</button>
+            <button class="primary" id="generateSplBtn" type="button">Generate searches</button>
+            <button class="ghost" id="clearSplBtn" type="button">Clear</button>
+          </div>
+          <div id="splResult" aria-live="polite" class="propsBox">
+            <div class="detectTitle">No searches generated yet</div>
+            <div class="detectNotes">Enter an index/sourcetype (or use the last raw event analysis) and select Generate searches.</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="cardHead">
+          <h2>Ingestion Config Generator</h2>
+          <p>Generates an inputs.conf monitor stanza and a ready-to-send HTTP Event Collector (HEC) payload for the current raw event sample.</p>
+        </div>
+        <div class="cardBody">
+          <div class="grid">
+            <div>
+              <label for="inputsIndex">Index</label>
+              <input id="inputsIndex" placeholder="main">
+            </div>
+            <div>
+              <label for="inputsSourcetype">Sourcetype</label>
+              <input id="inputsSourcetype" placeholder="custom:sourcetype">
+            </div>
+          </div>
+          <div>
+            <label for="inputsMonitorPath">Monitor path (inputs.conf)</label>
+            <input id="inputsMonitorPath" placeholder="/path/to/logs/*.log">
+          </div>
+          <div class="split">
+            <button class="ghost" id="inputsUseAnalysisBtn" type="button">Use last raw event analysis</button>
+            <button class="primary" id="generateInputsBtn" type="button">Generate inputs.conf</button>
+          </div>
+          <div id="inputsConfResult" aria-live="polite" class="propsBox">
+            <div class="detectTitle">inputs.conf</div>
+            <div class="detectNotes">Enter an index/sourcetype/path and select Generate inputs.conf.</div>
+          </div>
+          <div class="grid">
+            <div>
+              <label for="hecUrl">HEC URL</label>
+              <input id="hecUrl" placeholder="https://splunk-host:8088/services/collector/event">
+            </div>
+            <div>
+              <label for="hecToken">HEC token</label>
+              <input id="hecToken" placeholder="00000000-0000-0000-0000-000000000000">
+            </div>
+          </div>
+          <div class="split">
+            <button class="primary" id="generateHecBtn" type="button">Generate HEC payload</button>
+          </div>
+          <div id="hecResult" aria-live="polite" class="propsBox">
+            <div class="detectTitle">HEC payload</div>
+            <div class="detectNotes">Paste a raw event above and select Generate HEC payload.</div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="card" id="cim-compliance">
+      <div class="cardHead">
+        <h2>CIM Data Model Compliance</h2>
+        <p>Checks the current raw event's extracted fields against the core fields of a common Splunk CIM data model. Core fields shown are commonly documented CIM requirements, not a substitute for the official Common Information Model Add-on.</p>
+      </div>
+      <div class="cardBody">
+        <div>
+          <label for="cimModelSelect">CIM data model</label>
+          <select id="cimModelSelect"></select>
+        </div>
+        <div class="split">
+          <button class="primary" id="checkCimBtn" type="button">Check compliance</button>
+        </div>
+        <div id="cimResult" aria-live="polite" class="detectBox info">
+          <div class="detectTitle">No compliance check run yet</div>
+          <div class="detectNotes">Analyse a raw event above, choose a data model, and select Check compliance.</div>
+        </div>
+        <div id="cimFieldList" aria-live="polite" class="list"></div>
+      </div>
+    </section>
+
+    <section class="card" id="volume-estimator">
+      <div class="cardHead">
+        <h2>Index Volume / License Estimator</h2>
+        <p>Rough sizing estimate from average event size and volume. Splunk license usage is based on daily indexed (raw) bytes; on-disk storage is typically about half of raw volume, before retention and compression policy specifics.</p>
+      </div>
+      <div class="cardBody">
+        <div class="grid">
+          <div>
+            <label for="volAvgBytes">Average event size (bytes)</label>
+            <input id="volAvgBytes" placeholder="500">
+          </div>
+          <div>
+            <label for="volRetentionDays">Retention (days, optional)</label>
+            <input id="volRetentionDays" placeholder="90">
+          </div>
+        </div>
+        <div class="grid">
+          <div>
+            <label for="volEventsPerSecond">Events per second</label>
+            <input id="volEventsPerSecond" placeholder="100">
+          </div>
+          <div>
+            <label for="volEventsPerDay">Events per day (overrides events/sec)</label>
+            <input id="volEventsPerDay" placeholder="8640000">
+          </div>
+        </div>
+        <div class="split">
+          <button class="ghost" id="volUseSampleBtn" type="button">Use sample event size</button>
+          <button class="primary" id="estimateVolumeBtn" type="button">Estimate</button>
+          <button class="ghost" id="clearVolumeBtn" type="button">Clear</button>
+        </div>
+        <div id="volumeResult" aria-live="polite" class="detectBox info">
+          <div class="detectTitle">No estimate generated yet</div>
+          <div class="detectNotes">Enter an average event size and events per second/day, then select Estimate.</div>
         </div>
       </div>
     </section>

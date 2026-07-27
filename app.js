@@ -2386,6 +2386,167 @@ function buildAnalysisReportMarkdown(report){
   return lines.join('\n') + '\n';
 }
 
+const TIME_FORMAT_TOKEN_REGEX = {
+  '%:z': '[+-]\\d{2}:\\d{2}',
+  '%Y': '\\d{4}', '%y': '\\d{2}',
+  '%m': '(?:0[1-9]|1[0-2])', '%d': '(?:0[1-9]|[12]\\d|3[01])', '%e': '\\s?\\d{1,2}',
+  '%H': '(?:[01]\\d|2[0-3])', '%I': '(?:0[1-9]|1[0-2])', '%M': '[0-5]\\d', '%S': '(?:[0-5]\\d|60)',
+  '%j': '\\d{1,3}', '%p': '[AaPp][Mm]',
+  '%Q': '\\d+', '%f': '\\d{1,9}', '%N': '\\d{1,9}',
+  '%z': '[+-]\\d{4}', '%Z': '[A-Za-z]+',
+  '%a': '[A-Za-z]{3}', '%A': '[A-Za-z]+', '%b': '[A-Za-z]{3}', '%B': '[A-Za-z]+',
+  '%s': '\\d+', '%n': '\\s', '%t': '\\s', '%%': '%',
+  '%G': '\\d{4}', '%V': '\\d{2}', '%u': '\\d', '%g': '\\d{2}'
+};
+
+function escapeRegexChar(ch){
+  return /[.*+?^${}()|[\]\\]/.test(ch) ? '\\' + ch : ch;
+}
+
+function timeFormatToRegex(formatText){
+  const text = String(formatText || '');
+  const tokens = Object.keys(TIME_FORMAT_TOKEN_REGEX).sort((a,b) => b.length - a.length);
+  let pattern = '', i = 0;
+  const unsupported = [];
+  while(i < text.length){
+    if(text[i] === '%'){
+      const tok = tokens.find(t => text.startsWith(t, i));
+      if(tok){
+        pattern += TIME_FORMAT_TOKEN_REGEX[tok];
+        i += tok.length;
+        continue;
+      }
+      unsupported.push(text.slice(i, i+2));
+      pattern += escapeRegexChar('%');
+      i += 1;
+      continue;
+    }
+    pattern += escapeRegexChar(text[i]);
+    i += 1;
+  }
+  return {pattern, unsupported};
+}
+
+function validateTimeFormatAgainstSample(sample, timeFormat, timePrefix, maxLookahead){
+  if(!timeFormat) return {checked:false};
+  const {pattern, unsupported} = timeFormatToRegex(timeFormat);
+  const text = String(sample || '');
+  let regex;
+  try {
+    regex = new RegExp((timePrefix ? String(timePrefix) : '') + '(' + pattern + ')');
+  } catch(e) {
+    return {checked:true, valid:false, unsupported, error:`TIME_PREFIX or TIME_FORMAT produced an invalid regular expression: ${e.message}`};
+  }
+  const match = text.match(regex);
+  if(!match){
+    return {checked:true, valid:false, unsupported, error: timePrefix ? 'TIME_PREFIX + TIME_FORMAT did not match anywhere in the sample.' : 'TIME_FORMAT did not match anywhere in the sample.'};
+  }
+  const matchedValue = match[1];
+  const endIndex = match.index + match[0].length;
+  const withinLookahead = maxLookahead ? endIndex <= Number(maxLookahead) : null;
+  const warnings = [];
+  if(unsupported.length) warnings.push(`Unrecognised TIME_FORMAT token(s): ${unsupported.join(', ')} (treated as literal text).`);
+  if(withinLookahead === false) warnings.push(`Match ends at position ${endIndex}, beyond MAX_TIMESTAMP_LOOKAHEAD = ${maxLookahead}.`);
+  return {checked:true, valid:true, matchedValue, matchIndex:match.index, endIndex, withinLookahead, unsupported, warning: warnings.join(' ')};
+}
+
+function parsePropsConfText(text){
+  const settings = {};
+  let stanza = null;
+  String(text || '').split(/\r?\n/).forEach(line => {
+    const trimmed = line.trim();
+    if(!trimmed || trimmed.startsWith('#')) return;
+    const stanzaMatch = trimmed.match(/^\[(.+)\]$/);
+    if(stanzaMatch){ stanza = stanzaMatch[1]; return; }
+    const kvMatch = trimmed.match(/^([^=]+?)\s*=\s*(.*)$/);
+    if(kvMatch) settings[kvMatch[1].trim()] = kvMatch[2];
+  });
+  return {stanza, settings};
+}
+
+function validatePropsConf(propsText, sampleText){
+  const {stanza, settings} = parsePropsConfText(propsText);
+  const keys = Object.keys(settings);
+  if(!keys.length) return {stanza, checks:[], error:'No recognisable key = value settings found. Paste a props.conf stanza such as TIME_FORMAT = %Y-%m-%dT%H:%M:%S.%QZ'};
+
+  const sample = String(sampleText || '');
+  const firstLine = sample.split(/\r?\n/)[0] || sample;
+  const checks = [];
+
+  if(settings.TIME_FORMAT){
+    const result = validateTimeFormatAgainstSample(firstLine, settings.TIME_FORMAT, settings.TIME_PREFIX, settings.MAX_TIMESTAMP_LOOKAHEAD);
+    checks.push({
+      key:'TIME_FORMAT',
+      cls: result.valid ? (result.warning ? 'warn' : 'good') : 'bad',
+      message: result.valid
+        ? `Matched \`${result.matchedValue}\` in the sample.${result.warning ? ' ' + result.warning : ''}`
+        : (result.error || 'Could not validate against the sample.')
+    });
+  }
+
+  if(settings.LINE_BREAKER){
+    let regex, error;
+    try { regex = new RegExp(settings.LINE_BREAKER, 'g'); } catch(e){ error = e.message; }
+    if(error){
+      checks.push({key:'LINE_BREAKER', cls:'bad', message:`Invalid regular expression: ${error}`});
+    } else {
+      const boundaryCount = (sample.match(regex) || []).length;
+      const eventCount = boundaryCount + 1;
+      checks.push({
+        key:'LINE_BREAKER',
+        cls: boundaryCount > 0 ? 'good' : 'warn',
+        message: boundaryCount > 0
+          ? `Splits the sample into an estimated ${eventCount} event(s).`
+          : 'Did not match anywhere in the sample. Paste a multi-event sample with a real event boundary to confirm.'
+      });
+    }
+  }
+
+  ['EXTRACT-', 'REPORT-'].forEach(prefix => {
+    Object.keys(settings).filter(k => k.startsWith(prefix)).forEach(key => {
+      if(prefix === 'REPORT-'){
+        checks.push({key, cls:'info', message:'REPORT- settings reference a transforms.conf stanza, which this validator cannot check independently.'});
+        return;
+      }
+      let regex, error;
+      try { regex = new RegExp(settings[key]); } catch(e){ error = e.message; }
+      if(error){ checks.push({key, cls:'bad', message:`Invalid regular expression: ${error}`}); return; }
+      const match = sample.match(regex);
+      if(!match){ checks.push({key, cls:'warn', message:'Did not match the sample event.'}); return; }
+      const named = match.groups ? Object.entries(match.groups).map(([k,v]) => `${k}=${v}`).join(', ') : '';
+      checks.push({
+        key, cls:'good',
+        message: named ? `Matched. Captured fields: ${named}.` : 'Matched, but the pattern has no named capture groups (Splunk EXTRACT requires named groups to produce fields).'
+      });
+    });
+  });
+
+  if(settings.KV_MODE){
+    const mode = settings.KV_MODE.trim().toLowerCase();
+    const valid = ['none','auto','auto_escaped','multi','json','xml'].includes(mode);
+    checks.push({key:'KV_MODE', cls: valid ? 'good' : 'bad', message: valid ? 'Recognised KV_MODE value.' : `Unrecognised KV_MODE value "${settings.KV_MODE}". Expected one of none, auto, auto_escaped, multi, json, xml.`});
+  }
+
+  if(settings.INDEXED_EXTRACTIONS){
+    const mode = settings.INDEXED_EXTRACTIONS.trim().toLowerCase();
+    const valid = ['json','csv','w3c','tsv','psv'].includes(mode);
+    checks.push({key:'INDEXED_EXTRACTIONS', cls: valid ? 'good' : 'bad', message: valid ? 'Recognised INDEXED_EXTRACTIONS value.' : `Unrecognised INDEXED_EXTRACTIONS value "${settings.INDEXED_EXTRACTIONS}".`});
+  }
+
+  Object.keys(settings).filter(k => k.startsWith('FIELDALIAS-')).forEach(key => {
+    const valid = /^\S+\s+AS\s+\S+/i.test(settings[key].trim());
+    checks.push({key, cls: valid ? 'good' : 'bad', message: valid ? 'Recognised "<field> AS <alias>" syntax.' : 'Expected syntax: <field> AS <alias> [<field2> AS <alias2> ...].'});
+  });
+
+  const knownKeys = new Set(['TIME_FORMAT','TIME_PREFIX','MAX_TIMESTAMP_LOOKAHEAD','LINE_BREAKER','SHOULD_LINEMERGE','KV_MODE','INDEXED_EXTRACTIONS','FIELD_DELIMITER','FIELD_NAMES','FIELD_QUOTE']);
+  Object.keys(settings).forEach(key => {
+    const known = knownKeys.has(key) || key.startsWith('EXTRACT-') || key.startsWith('REPORT-') || key.startsWith('FIELDALIAS-') || key.startsWith('EVAL-');
+    if(!known) checks.push({key, cls:'info', message:'Setting is not validated by this tool.'});
+  });
+
+  return {stanza, checks};
+}
+
 function checkBatchConsistency(rawText){
   const lines = String(rawText || '').split(/\r?\n/).map(l => l.trim()).filter(Boolean);
   if(!lines.length) return null;
@@ -2443,6 +2604,132 @@ function checkBatchConsistency(rawText){
     dominantTsFormat, tsFormatCounts: [...tsFormatCounts.entries()], tsDrift, noTimestamp,
     tzStatusCounts: [...tzStatusCounts.entries()], tzDrift,
     verdict
+  };
+}
+
+function buildSplSearches({sourcetypeName, indexName, fields=[]}={}){
+  const index = indexName && indexName.trim() ? indexName.trim() : '<index>';
+  const sourcetype = sourcetypeName && sourcetypeName.trim() ? sourcetypeName.trim() : 'custom:sourcetype';
+  const topFields = fields.filter(Boolean).slice(0,12);
+  const ingestionCheck = `index=${index} sourcetype="${sourcetype}"\n| head 20`;
+  const fieldTable = topFields.length
+    ? `index=${index} sourcetype="${sourcetype}"\n| table _time, ${topFields.join(', ')}\n| head 20`
+    : `index=${index} sourcetype="${sourcetype}"\n| table _time, _raw\n| head 20`;
+  const timestampSanity = `index=${index} sourcetype="${sourcetype}"\n| eval index_lag_sec = _indextime - _time\n| stats count avg(index_lag_sec) as avg_lag_sec max(index_lag_sec) as max_lag_sec by sourcetype`;
+  return {ingestionCheck, fieldTable, timestampSanity};
+}
+
+function buildInputsConfStanza({sourcetypeName, indexName, monitorPath}={}){
+  const index = indexName && indexName.trim() ? indexName.trim() : '<index>';
+  const sourcetype = sourcetypeName && sourcetypeName.trim() ? sourcetypeName.trim() : 'custom:sourcetype';
+  const path = monitorPath && monitorPath.trim() ? monitorPath.trim() : '/path/to/logs/*.log';
+  return `[monitor://${path}]\nindex = ${index}\nsourcetype = ${sourcetype}\ndisabled = false`;
+}
+
+function estimateEventBytes(raw){
+  return typeof TextEncoder !== 'undefined' ? new TextEncoder().encode(String(raw || '')).length : String(raw || '').length;
+}
+
+function buildHecPayload({raw, detectedFormat, sourcetypeName, indexName, timestampEpochSeconds}={}){
+  let eventValue = raw;
+  if(detectedFormat === 'Structured JSON'){
+    try { eventValue = JSON.parse(raw); } catch(e) { eventValue = raw; }
+  }
+  const payload = {event: eventValue, sourcetype: sourcetypeName && sourcetypeName.trim() ? sourcetypeName.trim() : 'custom:sourcetype'};
+  if(indexName && indexName.trim()) payload.index = indexName.trim();
+  if(Number.isFinite(timestampEpochSeconds)) payload.time = timestampEpochSeconds;
+  return JSON.stringify(payload, null, 2);
+}
+
+function buildHecCurlCommand(hecJson, {hecUrl, hecToken}={}){
+  const url = hecUrl && hecUrl.trim() ? hecUrl.trim() : 'https://<splunk-host>:8088/services/collector/event';
+  const token = hecToken && hecToken.trim() ? hecToken.trim() : '<HEC-token>';
+  const escapedJson = String(hecJson || '').replace(/'/g, `'\\''`);
+  return `curl -k "${url}" \\\n  -H "Authorization: Splunk ${token}" \\\n  -d '${escapedJson}'`;
+}
+
+const CIM_FIELD_ALIASES = {
+  action: ['action','event.action','result','outcome'],
+  app: ['app','application','service'],
+  dest: ['dest','dest_ip','dst','dst_ip','destination','target'],
+  dest_port: ['dest_port','dport','destination_port'],
+  src: ['src','src_ip','source','source_ip'],
+  src_port: ['src_port','sport','source_port'],
+  user: ['user','username','user_name','account'],
+  signature: ['signature','signature_id','rule','rule_name'],
+  vendor_product: ['vendor_product','product','vendor'],
+  bytes: ['bytes','bytes_total'],
+  protocol: ['protocol','proto'],
+  transport: ['transport'],
+  http_method: ['http_method','method'],
+  http_user_agent: ['http_user_agent','user_agent','useragent'],
+  status: ['status','status_code','result_code'],
+  url: ['url','uri','request_url'],
+  file_name: ['file_name','filename'],
+  file_path: ['file_path','filepath','path'],
+  change_type: ['change_type','changetype'],
+  object: ['object','object_name'],
+  result: ['result','outcome'],
+  process: ['process','command_line','cmdline'],
+  process_name: ['process_name','image'],
+  process_id: ['process_id','pid'],
+  parent_process_name: ['parent_process_name','parentimage']
+};
+
+const CIM_DATA_MODELS = [
+  {id:'authentication', name:'Authentication', description:'Successful and failed authentication events.', fields:['action','app','dest','src','user','signature','vendor_product']},
+  {id:'network_traffic', name:'Network Traffic', description:'Firewall/network traffic allow or deny events.', fields:['action','app','bytes','dest','dest_port','src','src_port','protocol','transport','vendor_product']},
+  {id:'web', name:'Web', description:'HTTP/web proxy and web server traffic.', fields:['action','bytes','dest','http_method','http_user_agent','status','url','src','user']},
+  {id:'malware', name:'Malware', description:'Anti-virus/EDR malware detection and remediation events.', fields:['action','dest','file_name','file_path','signature','vendor_product']},
+  {id:'change', name:'Change', description:'Configuration, account, and endpoint change events.', fields:['action','change_type','dest','object','result','status','user']},
+  {id:'endpoint_processes', name:'Endpoint - Processes', description:'Process creation and termination events.', fields:['action','dest','process','process_name','process_id','parent_process_name','user']}
+];
+
+function findCimFieldMatches(extracted, field){
+  const expected = CIM_FIELD_ALIASES[field] || [field];
+  return findFields(extracted, expected.join(','), '');
+}
+
+function checkCimCompliance(modelId, extracted=[]){
+  const model = CIM_DATA_MODELS.find(m => m.id === modelId);
+  if(!model) return null;
+  const present = [], missing = [];
+  model.fields.forEach(field => {
+    const hits = findCimFieldMatches(extracted, field);
+    if(hits.length) present.push({field, matched:hits}); else missing.push(field);
+  });
+  const coverage = model.fields.length ? Math.round((present.length / model.fields.length) * 100) : 0;
+  return {model, present, missing, coverage};
+}
+
+function estimateIndexVolume({avgEventBytes, eventsPerSecond, eventsPerDay, retentionDays}={}){
+  const bytesPerEvent = Number(avgEventBytes);
+  if(!Number.isFinite(bytesPerEvent) || bytesPerEvent <= 0) return {valid:false, error:'Enter a positive average event size in bytes.'};
+
+  let dailyEvents;
+  if(eventsPerDay !== undefined && eventsPerDay !== null && String(eventsPerDay).trim() !== ''){
+    dailyEvents = Number(eventsPerDay);
+  } else if(eventsPerSecond !== undefined && eventsPerSecond !== null && String(eventsPerSecond).trim() !== ''){
+    dailyEvents = Number(eventsPerSecond) * 86400;
+  } else {
+    return {valid:false, error:'Enter either events per second or events per day.'};
+  }
+  if(!Number.isFinite(dailyEvents) || dailyEvents <= 0) return {valid:false, error:'Events per second/day must be a positive number.'};
+
+  const dailyBytes = bytesPerEvent * dailyEvents;
+  const GB = 1024 ** 3;
+  const retention = Number(retentionDays);
+  const hasRetention = Number.isFinite(retention) && retention > 0;
+
+  return {
+    valid:true,
+    dailyEvents: Math.round(dailyEvents),
+    dailyRawGB: dailyBytes / GB,
+    monthlyRawGB: (dailyBytes * 30) / GB,
+    annualRawGB: (dailyBytes * 365) / GB,
+    estimatedOnDiskDailyGB: (dailyBytes * 0.5) / GB,
+    retentionDays: hasRetention ? retention : null,
+    estimatedRetainedOnDiskGB: hasRetention ? (dailyBytes * 0.5 * retention) / GB : null
   };
 }
 
@@ -2614,6 +2901,14 @@ function analyseRawEvent() {
   const lineBreakDetection = detectLineBreakFormat(raw);
 
   lastAnalysis = {
+    raw,
+    detectedFormat: result.detected,
+    extractedFields: result.extracted,
+    timestampEpochSeconds: (() => {
+      if(!timestampCandidate) return null;
+      const converted = dateToEpoch(timestampCandidate.value);
+      return converted.valid ? converted.unixSeconds : null;
+    })(),
     sourcetypeName,
     fieldExtraction,
     timestampProps,
@@ -2731,6 +3026,185 @@ function runRegexTestHandler() {
   renderRegexTest(runRegexTest(pattern, flags, text));
 }
 
+function renderPropsValidatorResult(result) {
+  const box = $('#propsValidatorResult');
+  const list = $('#propsValidatorChecks');
+  if(!result) {
+    renderDetection(box, null, 'No stanza validated yet', 'Paste a props.conf stanza and a sample event and select Validate.');
+    list.innerHTML = '';
+    return;
+  }
+  if(result.error) {
+    renderValidationWarning(box, result.error);
+    list.innerHTML = '';
+    return;
+  }
+  const badCount = result.checks.filter(c => c.cls === 'bad').length;
+  const warnCount = result.checks.filter(c => c.cls === 'warn').length;
+  renderDetection(box, {
+    cls: badCount ? 'bad' : (warnCount ? 'warn' : 'good'),
+    title: `${result.checks.length} setting(s) checked`,
+    confidence: badCount ? `${badCount} failing` : (warnCount ? `${warnCount} warning(s)` : 'All checks passed'),
+    meta: result.stanza ? [['Stanza', result.stanza]] : []
+  }, '', '');
+  list.innerHTML = result.checks.map(c => `
+    <div class="item">
+      <strong><code>${esc(c.key)}</code> <span class="pill ${c.cls}">${esc(c.cls)}</span></strong>
+      <span class="small">${esc(c.message)}</span>
+    </div>
+  `).join('');
+}
+
+function validatePropsConfHandler() {
+  const propsText = $('#propsConfInput').value;
+  const sample = $('#propsConfSample').value;
+  if(!propsText.trim()) { renderValidationWarning($('#propsValidatorResult'), 'Paste a props.conf stanza first.'); return; }
+  renderPropsValidatorResult(validatePropsConf(propsText, sample));
+}
+
+function renderSplResult(searches) {
+  const box = $('#splResult');
+  if(!searches) {
+    box.innerHTML = `<div class="detectTitle">No searches generated yet</div><div class="detectNotes">Enter an index/sourcetype (or use the last raw event analysis) and select Generate searches.</div>`;
+    return;
+  }
+  box.innerHTML = `
+    <div class="detectTitle">Ingestion check</div>
+    <pre>${esc(searches.ingestionCheck)}</pre>
+    <div class="detectTitle">Field extraction table</div>
+    <pre>${esc(searches.fieldTable)}</pre>
+    <div class="detectTitle">Timestamp / index-time lag sanity check</div>
+    <pre>${esc(searches.timestampSanity)}</pre>
+  `;
+}
+
+function generateSplHandler() {
+  const indexName = $('#splIndex').value;
+  const sourcetypeName = $('#splSourcetype').value;
+  const fields = lastAnalysis && lastAnalysis.extractedFields ? lastAnalysis.extractedFields : [];
+  renderSplResult(buildSplSearches({indexName, sourcetypeName, fields}));
+}
+
+function useLastAnalysisForSpl() {
+  if(!lastAnalysis) {
+    $('#splResult').innerHTML = `<div class="detectTitle">No searches generated yet</div><div class="detectNotes">Analyse a raw event above first, then select Use last raw event analysis.</div>`;
+    return;
+  }
+  $('#splSourcetype').value = lastAnalysis.sourcetypeName || '';
+  generateSplHandler();
+}
+
+function renderInputsConfResult(stanza) {
+  const box = $('#inputsConfResult');
+  box.innerHTML = stanza
+    ? `<div class="detectTitle">inputs.conf</div><pre>${esc(stanza)}</pre>`
+    : `<div class="detectTitle">inputs.conf</div><div class="detectNotes">Enter an index/sourcetype/path and select Generate inputs.conf.</div>`;
+}
+
+function generateInputsConfHandler() {
+  const indexName = $('#inputsIndex').value;
+  const sourcetypeName = $('#inputsSourcetype').value;
+  const monitorPath = $('#inputsMonitorPath').value;
+  renderInputsConfResult(buildInputsConfStanza({indexName, sourcetypeName, monitorPath}));
+}
+
+function useLastAnalysisForInputs() {
+  if(!lastAnalysis) return;
+  $('#inputsSourcetype').value = lastAnalysis.sourcetypeName || '';
+  generateInputsConfHandler();
+}
+
+function renderHecResult(payload, curlCommand) {
+  const box = $('#hecResult');
+  box.innerHTML = payload
+    ? `<div class="detectTitle">HEC event payload</div><pre>${esc(payload)}</pre><div class="detectTitle">curl command</div><pre>${esc(curlCommand)}</pre>`
+    : `<div class="detectTitle">HEC payload</div><div class="detectNotes">Paste a raw event above and select Generate HEC payload.</div>`;
+}
+
+function generateHecHandler() {
+  const raw = $('#sampleRawEvent').value.trim();
+  if(!raw) { renderValidationWarning($('#hecResult'), 'Paste a sample raw event first.'); return; }
+  const result = detectRawFormat(raw);
+  const sourcetypeName = $('#inputsSourcetype').value || suggestSourcetypeName(result.detected, result.values);
+  const indexName = $('#inputsIndex').value;
+  const timestampCandidate = findTimestampCandidates(raw, result.values)[0] || null;
+  let timestampEpochSeconds = null;
+  if(timestampCandidate){
+    const converted = dateToEpoch(timestampCandidate.value);
+    if(converted.valid) timestampEpochSeconds = converted.unixSeconds;
+  }
+  const payload = buildHecPayload({raw, detectedFormat: result.detected, sourcetypeName, indexName, timestampEpochSeconds});
+  const curlCommand = buildHecCurlCommand(payload, {hecUrl: $('#hecUrl').value, hecToken: $('#hecToken').value});
+  renderHecResult(payload, curlCommand);
+}
+
+function renderCimResult(result) {
+  const box = $('#cimResult');
+  const list = $('#cimFieldList');
+  if(!result) {
+    renderDetection(box, null, 'No compliance check run yet', 'Analyse a raw event above, choose a data model, and select Check compliance.');
+    list.innerHTML = '';
+    return;
+  }
+  renderDetection(box, {
+    cls: result.coverage >= 80 ? 'good' : (result.coverage >= 40 ? 'warn' : 'bad'),
+    title: `${result.model.name}: ${result.coverage}% core field coverage`,
+    confidence: `${result.present.length} of ${result.model.fields.length} core fields present`,
+    meta: [['Model', result.model.description]]
+  }, '', '');
+  list.innerHTML = [
+    ...result.present.map(p => `<div class="item"><strong>${esc(p.field)} <span class="pill good">present</span></strong><span class="small">Matched: ${esc(p.matched.join(', '))}</span></div>`),
+    ...result.missing.map(f => `<div class="item"><strong>${esc(f)} <span class="pill warn">missing</span></strong></div>`)
+  ].join('');
+}
+
+function checkCimComplianceHandler() {
+  const raw = $('#sampleRawEvent').value.trim();
+  if(!raw) { renderValidationWarning($('#cimResult'), 'Paste and analyse a raw event first.'); return; }
+  const modelId = $('#cimModelSelect').value;
+  const {extracted} = detectRawFormat(raw);
+  renderCimResult(checkCimCompliance(modelId, extracted));
+}
+
+function renderVolumeResult(result) {
+  const box = $('#volumeResult');
+  if(!result) {
+    renderDetection(box, null, 'No estimate generated yet', 'Enter an average event size and events per second/day, then select Estimate.');
+    return;
+  }
+  if(!result.valid) {
+    renderValidationWarning(box, result.error);
+    return;
+  }
+  const gb = n => n.toFixed(2);
+  renderDetection(box, {
+    cls: 'good',
+    title: `${gb(result.dailyRawGB)} GB/day raw (license-relevant)`,
+    confidence: `${result.dailyEvents.toLocaleString()} events/day`,
+    meta: [
+      ['Monthly raw', `${gb(result.monthlyRawGB)} GB`],
+      ['Annual raw', `${gb(result.annualRawGB)} GB`],
+      ['Est. on-disk/day', `${gb(result.estimatedOnDiskDailyGB)} GB`],
+      ...(result.estimatedRetainedOnDiskGB !== null ? [['Est. on-disk retained', `${gb(result.estimatedRetainedOnDiskGB)} GB over ${result.retentionDays}d`]] : [])
+    ],
+    notes: 'On-disk figures are a rough 50% rule-of-thumb estimate; actual compression varies by data type. License usage is based on raw daily volume above, not on-disk size.'
+  }, '', '');
+}
+
+function estimateVolumeHandler() {
+  const avgEventBytes = $('#volAvgBytes').value;
+  const eventsPerSecond = $('#volEventsPerSecond').value;
+  const eventsPerDay = $('#volEventsPerDay').value;
+  const retentionDays = $('#volRetentionDays').value;
+  renderVolumeResult(estimateIndexVolume({avgEventBytes, eventsPerSecond, eventsPerDay, retentionDays}));
+}
+
+function useSampleEventSizeHandler() {
+  const raw = $('#sampleRawEvent').value;
+  if(!raw.trim()) { renderValidationWarning($('#volumeResult'), 'Paste a sample raw event first.'); return; }
+  $('#volAvgBytes').value = String(estimateEventBytes(raw));
+}
+
 function copyResults() {
   const logTitle = $('#logFormatResult .detectTitle')?.innerText || '';
   const tsTitle = $('#timestampResult .detectTitle')?.innerText || '';
@@ -2780,6 +3254,19 @@ function resetAll() {
   $('#epochInput').value = '';
   $('#epochUnit').value = 'auto';
   $('#dateTimeInput').value = '';
+  $('#propsConfInput').value = '';
+  $('#propsConfSample').value = '';
+  $('#splIndex').value = '';
+  $('#splSourcetype').value = '';
+  $('#inputsIndex').value = '';
+  $('#inputsSourcetype').value = '';
+  $('#inputsMonitorPath').value = '';
+  $('#hecUrl').value = '';
+  $('#hecToken').value = '';
+  $('#volAvgBytes').value = '';
+  $('#volEventsPerSecond').value = '';
+  $('#volEventsPerDay').value = '';
+  $('#volRetentionDays').value = '';
   renderDetection($('#timestampResult'), null, 'No timestamp detected yet', 'Paste one timestamp and select Detect timestamp.');
   renderPropsConfSuggestion(null);
   renderReverseTimeFormatResult(null);
@@ -2791,6 +3278,12 @@ function resetAll() {
   renderRegexTest(null);
   renderEpochToDateResult(null);
   renderDateToEpochResult(null);
+  renderPropsValidatorResult(null);
+  renderSplResult(null);
+  renderInputsConfResult(null);
+  renderHecResult(null, null);
+  renderCimResult(null);
+  renderVolumeResult(null);
   resetRawEventOutputs();
 }
 
@@ -2799,6 +3292,7 @@ function init() {
   $('#formatCount').textContent = String(TIME_FORMATS.length);
   $('#usernameRefTable tbody').innerHTML = USERNAME_FORMATS.map(row => `<tr><td>${esc(row.precedence)}</td><td>${esc(row.name)}</td><td>${esc(row.category)}</td><td><code>${esc(row.example)}</code></td><td>${esc(row.template)}</td><td><code>${esc(row.regex)}</code></td><td>${esc(row.notes)}</td></tr>`).join('');
   $('#usernameFormatCount').textContent = String(USERNAME_FORMATS.length);
+  $('#cimModelSelect').innerHTML = CIM_DATA_MODELS.map(m => `<option value="${esc(m.id)}">${esc(m.name)}</option>`).join('');
   $('#analyzeBtn').addEventListener('click', analyseRawEvent);
   $('#detectTimestampBtn').addEventListener('click', detectStandaloneTimestamp);
   $('#reverseTimeFormatBtn').addEventListener('click', detectReverseTimeFormat);
@@ -2882,6 +3376,32 @@ function init() {
   $('#sampleDateTime').addEventListener('keydown', e => { if(e.key === 'Enter') detectStandaloneTimestamp(); });
   $('#sampleSplunkTimeFormat').addEventListener('keydown', e => { if(e.key === 'Enter') detectReverseTimeFormat(); });
   $('#sampleUsername').addEventListener('keydown', e => { if(e.key === 'Enter') detectStandaloneUsername(); });
+  $('#validatePropsBtn').addEventListener('click', validatePropsConfHandler);
+  $('#clearPropsValidatorBtn').addEventListener('click', () => {
+    $('#propsConfInput').value = '';
+    $('#propsConfSample').value = '';
+    renderPropsValidatorResult(null);
+  });
+  $('#generateSplBtn').addEventListener('click', generateSplHandler);
+  $('#splUseAnalysisBtn').addEventListener('click', useLastAnalysisForSpl);
+  $('#clearSplBtn').addEventListener('click', () => {
+    $('#splIndex').value = '';
+    $('#splSourcetype').value = '';
+    renderSplResult(null);
+  });
+  $('#generateInputsBtn').addEventListener('click', generateInputsConfHandler);
+  $('#inputsUseAnalysisBtn').addEventListener('click', useLastAnalysisForInputs);
+  $('#generateHecBtn').addEventListener('click', generateHecHandler);
+  $('#checkCimBtn').addEventListener('click', checkCimComplianceHandler);
+  $('#estimateVolumeBtn').addEventListener('click', estimateVolumeHandler);
+  $('#volUseSampleBtn').addEventListener('click', useSampleEventSizeHandler);
+  $('#clearVolumeBtn').addEventListener('click', () => {
+    $('#volAvgBytes').value = '';
+    $('#volEventsPerSecond').value = '';
+    $('#volEventsPerDay').value = '';
+    $('#volRetentionDays').value = '';
+    renderVolumeResult(null);
+  });
   initThemeToggle();
 }
 
@@ -2942,6 +3462,19 @@ if(typeof module !== 'undefined' && module.exports) {
     combineFieldExtractionWithCim,
     detectTruncationRisk,
     buildRawEventReport,
-    buildAnalysisReportMarkdown
+    buildAnalysisReportMarkdown,
+    timeFormatToRegex,
+    validateTimeFormatAgainstSample,
+    parsePropsConfText,
+    validatePropsConf,
+    buildSplSearches,
+    buildInputsConfStanza,
+    estimateEventBytes,
+    buildHecPayload,
+    buildHecCurlCommand,
+    CIM_DATA_MODELS,
+    findCimFieldMatches,
+    checkCimCompliance,
+    estimateIndexVolume
   };
 }
