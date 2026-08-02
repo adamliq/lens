@@ -7,6 +7,9 @@ const {
   detectRawFormat,
   extractWindowsEventXmlFields,
   extractGenericXmlFields,
+  parseColonKeyValues,
+  classifyKeyValueStyle,
+  suggestFieldExtraction,
   reverseLookupTimeFormat,
   findTimestampCandidates,
   findUsernameCandidates,
@@ -110,6 +113,72 @@ test('detectRawFormat handles key=value pairs', () => {
   const result = detectRawFormat(raw);
   assert.ok(result.extracted.includes('user'));
   assert.equal(result.values.action, 'login');
+});
+
+test('classifyKeyValueStyle identifies space-separated logfmt-style key=value pairs', () => {
+  const result = classifyKeyValueStyle('user=jsmith action=login result=success');
+  assert.equal(result.applicable, true);
+  assert.equal(result.separator, '=');
+  assert.equal(result.delimiterLabel, 'Space-separated (logfmt-style)');
+  assert.equal(result.pairCount, 3);
+});
+
+test('classifyKeyValueStyle identifies comma-separated colon-style key: value pairs', () => {
+  const result = classifyKeyValueStyle('level: info, user: jsmith, action: login');
+  assert.equal(result.applicable, true);
+  assert.equal(result.separator, ':');
+  assert.equal(result.delimiterLabel, 'Comma-separated');
+  assert.equal(result.styleName, 'Comma-separated key: value');
+});
+
+test('classifyKeyValueStyle identifies semicolon- and comma-separated key=value pairs', () => {
+  assert.equal(classifyKeyValueStyle('user=jsmith; action=login; result=success').delimiterLabel, 'Semicolon-separated');
+  assert.equal(classifyKeyValueStyle('user=jsmith, action=login, result=success').delimiterLabel, 'Comma-separated');
+});
+
+test('classifyKeyValueStyle detects quoted values and returns not-applicable for plain text', () => {
+  assert.equal(classifyKeyValueStyle('user="John Smith" action=login').hasQuotedValues, true);
+  assert.equal(classifyKeyValueStyle('just some plain text').applicable, false);
+});
+
+test('parseColonKeyValues extracts colon-separated key: value pairs', () => {
+  const values = parseColonKeyValues('level: info, user: jsmith, action: login');
+  assert.equal(values.level, 'info');
+  assert.equal(values.user, 'jsmith');
+  assert.equal(values.action, 'login');
+});
+
+test('detectRawFormat classifies colon-separated KV logs (previously misclassified as CSV) and extracts fields', () => {
+  const raw = 'level: info, user: jsmith, action: login, result: success';
+  const result = detectRawFormat(raw);
+  assert.equal(result.detected, 'Key-value formatted logs');
+  assert.equal(result.values.user, 'jsmith');
+  assert.equal(result.values.action, 'login');
+});
+
+test('detectRawFormat does not misclassify a single "Label: text" line as key-value', () => {
+  const result = detectRawFormat('Error: could not connect to database');
+  assert.equal(result.detected, 'Unstructured or unknown');
+});
+
+test('detectRawFormat is unaffected by a colon after a process name in syslog text', () => {
+  const raw = '<34>Jul  9 14:30:45 host sshd[1234]: Failed password for invalid user admin';
+  assert.equal(detectRawFormat(raw).detected, 'RFC 3164 syslog');
+});
+
+test('suggestFieldExtraction recommends explicit EXTRACT (not KV_MODE=auto) for colon-style KV logs', () => {
+  const raw = 'level: info, user: jsmith, action: login, result: success';
+  const kv = detectRawFormat(raw);
+  const suggestion = suggestFieldExtraction(kv.detected, raw, kv.values, kv.extracted);
+  assert.match(suggestion.propsConf, /EXTRACT-\w+ = \w+:\\s\+/);
+  assert.match(suggestion.notes.join(' '), /KV_MODE = auto only extracts key=value pairs/);
+});
+
+test('suggestFieldExtraction still recommends KV_MODE=auto for equals-style KV logs', () => {
+  const raw = 'user=jsmith action=login result=success';
+  const kv = detectRawFormat(raw);
+  const suggestion = suggestFieldExtraction(kv.detected, raw, kv.values, kv.extracted);
+  assert.equal(suggestion.propsConf, 'KV_MODE = auto');
 });
 
 test('detectLineBreakFormat detects timestamp-anchored multiline events', () => {

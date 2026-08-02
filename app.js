@@ -605,6 +605,54 @@ function parseKeyValues(raw){
   return out;
 }
 
+function parseColonKeyValues(raw){
+  const out = {};
+  const text = String(raw || '');
+  const re = /(?:^|[\s,;])([A-Za-z_][\w.-]{1,80}):\s+("[^"]*"|'[^']*'|[^\s,;]+)/g;
+  let m;
+  while((m = re.exec(text))){
+    out[m[1]] = String(m[2] || '').replace(/^['"]|['"]$/g,'');
+  }
+  return out;
+}
+
+function classifyKeyValueStyle(raw){
+  const text = String(raw || '');
+  const first = text.split(/\r?\n/)[0] || text;
+
+  const eqMatches = first.match(/(?:^|[\s,;])[A-Za-z_][\w.-]{0,80}=(?:"[^"]*"|'[^']*'|[^\s,;]+)/g) || [];
+  const colonMatches = first.match(/(?:^|[\s,;])[A-Za-z_][\w.-]{0,80}:\s+(?:"[^"]*"|'[^']*'|[^\s,;]+)/g) || [];
+
+  const useColon = colonMatches.length > eqMatches.length;
+  const matches = useColon ? colonMatches : eqMatches;
+  if(!matches.length) return {applicable:false};
+
+  const separator = useColon ? ':' : '=';
+  const separatorLabel = useColon ? 'key: value' : 'key=value';
+  const hasQuotedValues = matches.some(m => /["']/.test(m));
+
+  const pairLead = useColon ? ':\\s+' : '=';
+  const hasComma = new RegExp(`,\\s*[A-Za-z_][\\w.-]{0,80}${pairLead}`).test(first);
+  const hasSemicolon = new RegExp(`;\\s*[A-Za-z_][\\w.-]{0,80}${pairLead}`).test(first);
+  const hasPipe = new RegExp(`\\|\\s*[A-Za-z_][\\w.-]{0,80}${pairLead}`).test(first);
+
+  let delimiterLabel;
+  if(hasComma) delimiterLabel = 'Comma-separated';
+  else if(hasSemicolon) delimiterLabel = 'Semicolon-separated';
+  else if(hasPipe) delimiterLabel = 'Pipe-separated';
+  else delimiterLabel = separator === '=' ? 'Space-separated (logfmt-style)' : 'Space-separated';
+
+  return {
+    applicable: true,
+    separator,
+    separatorLabel,
+    delimiterLabel,
+    hasQuotedValues,
+    pairCount: matches.length,
+    styleName: `${delimiterLabel} ${separatorLabel}`
+  };
+}
+
 function extractCefFields(raw){
   const out = {};
   const idx = String(raw || '').indexOf('CEF:');
@@ -2249,12 +2297,15 @@ function detectRawFormat(raw) {
       (/<EventID\b/i.test(raw) && /<Provider\b/i.test(raw))
     );
 
+    const kvStyle = classifyKeyValueStyle(first);
+    const looksLikeColonKv = kvStyle.applicable && kvStyle.separator === ':' && kvStyle.pairCount >= 2;
+
     if(/^<\d+>1\s+\d{4}-\d{2}-\d{2}T/.test(first)) detected = 'RFC 5424 structured syslog';
     else if(/^<\d+>/.test(first) && /\w{3}\s+\d{1,2}\s+\d{2}:\d{2}:\d{2}/.test(first)) detected = 'RFC 3164 syslog';
     else if(first.includes('CEF:')) detected = 'Common Event Format (CEF)';
     else if(isWindowsEventXml) detected = 'Windows Event XML';
     else if(looksLikeXml) detected = 'XML log';
-    else if(/\w+=\S+/.test(first)) detected = 'Key-value formatted logs';
+    else if(/\w+=\S+/.test(first) || looksLikeColonKv) detected = 'Key-value formatted logs';
     else if(first.includes('\t')) detected = 'Tab-separated values (TSV)';
     else if(first.includes(',') && first.split(',').length > 2) detected = 'Comma-separated values (CSV)';
     else detected = parseStatus === 'malformed' ? 'Malformed structured payload' : 'Unstructured or unknown';
@@ -2267,6 +2318,9 @@ function detectRawFormat(raw) {
       extracted = Object.keys(values).sort();
     } else {
       values = {...parseKeyValues(raw), ...extractCefFields(raw)};
+      if(detected === 'Key-value formatted logs' && !Object.keys(values).length){
+        values = {...values, ...parseColonKeyValues(raw)};
+      }
       extracted = Array.from(new Set([
         ...Object.keys(values),
         ...((raw.match(/(?:^|[\s,{])([A-Za-z_][\w.-]{1,80})(?:=|:)/g) || []).map(x => x.replace(/^[\s,{]+/,'').replace(/[=:]$/,'')))
@@ -2316,7 +2370,15 @@ function suggestFieldExtraction(detected, raw, values={}, extracted=[]){
   }
   if(detected === 'Key-value formatted logs'){
     const sampleKey = normKey(extracted[0] || 'user') || 'user';
-    return base('Key-value pairs - automatic KV extraction', 'warn',
+    const kvStyle = classifyKeyValueStyle(raw);
+    if(kvStyle.applicable && kvStyle.separator === ':'){
+      return base(`${kvStyle.styleName} - explicit EXTRACT required`, 'warn',
+        `EXTRACT-${sampleKey} = ${sampleKey}:\\s+(?<${sampleKey}>"[^"]*"|\\S+)`,
+        [`Detected ${kvStyle.styleName.toLowerCase()} pairs. Splunk's KV_MODE = auto only extracts key=value pairs by default and will not extract "${sampleKey}: value" style pairs — use explicit EXTRACT statements per field instead.`,
+         'Repeat the EXTRACT pattern (with a distinct stanza name per field) for every required field, or write one REPORT-based transform with multiple named groups if the field order is stable.']);
+    }
+    const styleNote = kvStyle.applicable ? ` (${kvStyle.styleName.toLowerCase()} detected)` : '';
+    return base(`Key-value pairs${styleNote} - automatic KV extraction`, 'warn',
       'KV_MODE = auto',
       [`KV_MODE = auto covers most key=value pairs, including quoted values. For high-volume sourcetypes, replace it with explicit EXTRACT statements per required field for better search performance, for example: EXTRACT-${sampleKey} = ${sampleKey}=(?<${sampleKey}>"[^"]*"|\\S+)`,
        'Disable KV_MODE = auto once explicit EXTRACT statements cover every required field, to avoid double extraction.']);
@@ -3855,6 +3917,8 @@ if(typeof module !== 'undefined' && module.exports) {
     detectRawFormat,
     extractWindowsEventXmlFields,
     extractGenericXmlFields,
+    parseColonKeyValues,
+    classifyKeyValueStyle,
     slug,
     suggestSourcetypeName,
     suggestFieldExtraction,
