@@ -634,12 +634,10 @@ function classifyKeyValueStyle(raw){
   const pairLead = useColon ? ':\\s+' : '=';
   const hasComma = new RegExp(`,\\s*[A-Za-z_][\\w.-]{0,80}${pairLead}`).test(first);
   const hasSemicolon = new RegExp(`;\\s*[A-Za-z_][\\w.-]{0,80}${pairLead}`).test(first);
-  const hasPipe = new RegExp(`\\|\\s*[A-Za-z_][\\w.-]{0,80}${pairLead}`).test(first);
 
   let delimiterLabel;
   if(hasComma) delimiterLabel = 'Comma-separated';
   else if(hasSemicolon) delimiterLabel = 'Semicolon-separated';
-  else if(hasPipe) delimiterLabel = 'Pipe-separated';
   else delimiterLabel = separator === '=' ? 'Space-separated (logfmt-style)' : 'Space-separated';
 
   return {
