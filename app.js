@@ -2196,6 +2196,43 @@ function renderRawIpFindings(raw, values) {
   if(!$('#sampleIpAddress').value) $('#sampleIpAddress').value = preferred.value;
 }
 
+function extractWindowsEventXmlFields(raw){
+  const values = {};
+  const simpleField = tag => {
+    const m = raw.match(new RegExp(`<${tag}\\b[^>]*>([^<]*)</${tag}>`, 'i'));
+    if(m && m[1].trim()) values[tag] = m[1].trim();
+  };
+  ['EventID','Channel','Computer','Level','Task','Keywords','EventRecordID'].forEach(simpleField);
+  const providerMatch = raw.match(/<Provider\b[^>]*\bName=["']([^"']+)["']/i);
+  if(providerMatch) values['Provider.Name'] = providerMatch[1];
+  const timeMatch = raw.match(/<TimeCreated\b[^>]*\bSystemTime=["']([^"']+)["']/i);
+  if(timeMatch) values['TimeCreated.SystemTime'] = timeMatch[1];
+  const userIdMatch = raw.match(/<Security\b[^>]*\bUserID=["']([^"']+)["']/i);
+  if(userIdMatch) values['Security.UserID'] = userIdMatch[1];
+  const dataRe = /<Data\s+Name=["']([^"']+)["'][^>]*>([^<]*)<\/Data>/gi;
+  let m;
+  while((m = dataRe.exec(raw))){
+    if(m[2].trim()) values[m[1]] = m[2].trim();
+  }
+  return values;
+}
+
+function extractGenericXmlFields(raw){
+  const values = {};
+  const leafRe = /<([A-Za-z_][\w:.-]*)(?:\s[^>]*)?>([^<]*)<\/\1>/g;
+  let m;
+  while((m = leafRe.exec(raw))){
+    const text = m[2].trim();
+    if(text) values[m[1]] = text;
+  }
+  const attrRe = /\s([A-Za-z_][\w:-]*)=["']([^"']*)["']/g;
+  while((m = attrRe.exec(raw))){
+    if(/^xmlns/i.test(m[1]) || m[1] in values) continue;
+    values[`@${m[1]}`] = m[2];
+  }
+  return values;
+}
+
 function detectRawFormat(raw) {
   let detected = '', extracted = [], values = {}, parseStatus = 'ok';
   const first = raw.split(/\r?\n/)[0] || '';
@@ -2205,18 +2242,36 @@ function detectRawFormat(raw) {
     detected = 'Structured JSON';
   } catch(e) {
     if(/^\s*[\[{]/.test(raw)) parseStatus = 'malformed';
+    const trimmed = raw.trim();
+    const looksLikeXml = /^<\?xml/i.test(trimmed) || /^<[A-Za-z]/.test(trimmed);
+    const isWindowsEventXml = looksLikeXml && (
+      /xmlns=["']http:\/\/schemas\.microsoft\.com\/win\/2004\/08\/events\/event["']/i.test(raw) ||
+      (/<EventID\b/i.test(raw) && /<Provider\b/i.test(raw))
+    );
+
     if(/^<\d+>1\s+\d{4}-\d{2}-\d{2}T/.test(first)) detected = 'RFC 5424 structured syslog';
     else if(/^<\d+>/.test(first) && /\w{3}\s+\d{1,2}\s+\d{2}:\d{2}:\d{2}/.test(first)) detected = 'RFC 3164 syslog';
     else if(first.includes('CEF:')) detected = 'Common Event Format (CEF)';
+    else if(isWindowsEventXml) detected = 'Windows Event XML';
+    else if(looksLikeXml) detected = 'XML log';
     else if(/\w+=\S+/.test(first)) detected = 'Key-value formatted logs';
     else if(first.includes('\t')) detected = 'Tab-separated values (TSV)';
     else if(first.includes(',') && first.split(',').length > 2) detected = 'Comma-separated values (CSV)';
     else detected = parseStatus === 'malformed' ? 'Malformed structured payload' : 'Unstructured or unknown';
-    values = {...parseKeyValues(raw), ...extractCefFields(raw)};
-    extracted = Array.from(new Set([
-      ...Object.keys(values),
-      ...((raw.match(/(?:^|[\s,{])([A-Za-z_][\w.-]{1,80})(?:=|:)/g) || []).map(x => x.replace(/^[\s,{]+/,'').replace(/[=:]$/,'')))
-    ])).sort();
+
+    if(detected === 'Windows Event XML'){
+      values = extractWindowsEventXmlFields(raw);
+      extracted = Object.keys(values).sort();
+    } else if(detected === 'XML log'){
+      values = extractGenericXmlFields(raw);
+      extracted = Object.keys(values).sort();
+    } else {
+      values = {...parseKeyValues(raw), ...extractCefFields(raw)};
+      extracted = Array.from(new Set([
+        ...Object.keys(values),
+        ...((raw.match(/(?:^|[\s,{])([A-Za-z_][\w.-]{1,80})(?:=|:)/g) || []).map(x => x.replace(/^[\s,{]+/,'').replace(/[=:]$/,'')))
+      ])).sort();
+    }
   }
   return { detected, extracted, values, parseStatus };
 }
@@ -3798,6 +3853,8 @@ if(typeof module !== 'undefined' && module.exports) {
     detectUsernameFormat,
     findUsernameCandidates,
     detectRawFormat,
+    extractWindowsEventXmlFields,
+    extractGenericXmlFields,
     slug,
     suggestSourcetypeName,
     suggestFieldExtraction,

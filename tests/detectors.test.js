@@ -5,6 +5,8 @@ const {
   detectUsernameFormat,
   detectLineBreakFormat,
   detectRawFormat,
+  extractWindowsEventXmlFields,
+  extractGenericXmlFields,
   reverseLookupTimeFormat,
   findTimestampCandidates,
   findUsernameCandidates,
@@ -55,6 +57,52 @@ test('detectRawFormat classifies a structured JSON event and extracts fields', (
   assert.equal(result.parseStatus, 'ok');
   assert.deepEqual(result.extracted.sort(), ['action', 'result', 'timestamp', 'user']);
   assert.equal(result.values.user, 'jsmith');
+});
+
+test('detectRawFormat classifies a Windows Event XML sample and extracts System/EventData fields', () => {
+  const raw = '<Event xmlns="http://schemas.microsoft.com/win/2004/08/events/event"><System><Provider Name="Microsoft-Windows-Security-Auditing"/><EventID>4624</EventID><Channel>Security</Channel><Computer>DC01.contoso.com</Computer><Security UserID="S-1-5-18"/><TimeCreated SystemTime="2026-07-09T14:30:45.123456Z"/></System><EventData><Data Name="TargetUserName">jsmith</Data><Data Name="LogonType">3</Data></EventData></Event>';
+  const result = detectRawFormat(raw);
+  assert.equal(result.detected, 'Windows Event XML');
+  assert.equal(result.values.EventID, '4624');
+  assert.equal(result.values['Provider.Name'], 'Microsoft-Windows-Security-Auditing');
+  assert.equal(result.values.TargetUserName, 'jsmith');
+  assert.ok(result.extracted.includes('TargetUserName'));
+});
+
+test('detectRawFormat recognises Windows Event XML without the namespace via EventID + Provider tags', () => {
+  const raw = '<Event><System><Provider Name="App"/><EventID>1000</EventID></System></Event>';
+  assert.equal(detectRawFormat(raw).detected, 'Windows Event XML');
+});
+
+test('detectRawFormat classifies generic XML and extracts leaf text and attribute fields', () => {
+  const raw = '<?xml version="1.0"?><log><timestamp>2026-07-09T14:30:45Z</timestamp><user id="42">jsmith</user><action>login</action></log>';
+  const result = detectRawFormat(raw);
+  assert.equal(result.detected, 'XML log');
+  assert.equal(result.values.timestamp, '2026-07-09T14:30:45Z');
+  assert.equal(result.values.user, 'jsmith');
+  assert.equal(result.values['@id'], '42');
+});
+
+test('detectRawFormat does not misclassify CEF or KV logs that merely look XML-adjacent', () => {
+  assert.equal(detectRawFormat('CEF:0|Vendor|Product|1.0|100|Login|5|src=1.2.3.4').detected, 'Common Event Format (CEF)');
+  assert.equal(detectRawFormat('user=jsmith action=login').detected, 'Key-value formatted logs');
+});
+
+test('extractWindowsEventXmlFields pulls System and EventData fields independently of detection', () => {
+  const raw = '<Event><System><EventID>4625</EventID><Provider Name="Sec"/></System><EventData><Data Name="SubStatus">0xC0000064</Data></EventData></Event>';
+  const values = extractWindowsEventXmlFields(raw);
+  assert.equal(values.EventID, '4625');
+  assert.equal(values['Provider.Name'], 'Sec');
+  assert.equal(values.SubStatus, '0xC0000064');
+});
+
+test('extractGenericXmlFields ignores xmlns attributes and empty leaf elements', () => {
+  const raw = '<root xmlns="urn:test"><empty></empty><a b="c">text</a></root>';
+  const values = extractGenericXmlFields(raw);
+  assert.equal('xmlns' in values, false);
+  assert.equal('empty' in values, false);
+  assert.equal(values.a, 'text');
+  assert.equal(values['@b'], 'c');
 });
 
 test('detectRawFormat handles key=value pairs', () => {
