@@ -2439,6 +2439,160 @@ function buildLookupSkeleton(fieldName, rawValues){
   return {valid:true, fieldName:field, outputField, distinctValueCount:distinct.length, csv, lookupName, transformsConf, propsConf};
 }
 
+function buildEventgenTokenRegex(detectedFormat, key, value){
+  const escValue = escapeRegexLiteral(String(value));
+  if(!escValue) return null;
+  const jsonKey = key.includes('.') ? key.split('.').pop() : key;
+  const escKey = escapeRegexLiteral(key);
+  const escJsonKey = escapeRegexLiteral(jsonKey);
+
+  if(detectedFormat === 'Structured JSON'){
+    const isNumericOrBool = /^-?\d+(\.\d+)?$|^(?:true|false|null)$/.test(String(value));
+    return isNumericOrBool
+      ? `"${escJsonKey}":\\s*(${escValue})`
+      : `"${escJsonKey}":"(${escValue})"`;
+  }
+  if(detectedFormat === 'Windows Event XML' || detectedFormat === 'XML log'){
+    return `(?:<${escKey}\\b[^>]*>|Name=["']${escKey}["'][^>]*>)(${escValue})`;
+  }
+  if(detectedFormat === 'Key-value formatted logs' || detectedFormat === 'Common Event Format (CEF)'){
+    return `${escKey}[=:]\\s*"?(${escValue})"?`;
+  }
+  return `(${escValue})`;
+}
+
+function inferEventgenToken(detectedFormat, key, value){
+  const strValue = String(value);
+  const tokenRegex = buildEventgenTokenRegex(detectedFormat, key, strValue);
+  const base = {key, value: strValue, tokenRegex};
+  if(!tokenRegex) return null;
+
+  const tsDetection = detectDateTimeFormat(strValue);
+  if(tsDetection && tsDetection.formatName !== 'Unknown or unsupported timestamp format' && tsDetection.timeFormat && !/custom/i.test(tsDetection.timeFormat)){
+    return {...base, replacementType:'timestamp', replacement: tsDetection.timeFormat, note:`Detected as ${tsDetection.formatName}.`};
+  }
+  const ip = classifyIpAddress(strValue);
+  if(ip.valid){
+    return {...base, replacementType:'random', replacement: ip.version === 'IPv6' ? 'ipv6' : 'ipv4', note:`Detected as ${ip.version} (${ip.category}).`};
+  }
+  const username = detectUsernameFormat(strValue);
+  if(username && username.cls === 'good'){
+    return {...base, replacementType:'random', replacement:`list["${strValue}"]`, note:`Detected as ${username.formatName}. Add more sample values to the list for realistic variety.`};
+  }
+  if(/^-?\d+$/.test(strValue)){
+    const n = parseInt(strValue, 10);
+    const span = Math.max(10, Math.abs(n));
+    return {...base, replacementType:'random', replacement:`integer[${Math.max(0, n - span)}:${n + span}]`, note:'Numeric field; adjust the range to match realistic values.'};
+  }
+  return {...base, replacementType:'static', replacement: strValue, note:'No specific pattern detected; left static. Change the replacement type if this field should vary.'};
+}
+
+function buildEventgenTokenPlan(detected, values={}, extracted=[]){
+  return extracted
+    .filter(key => values[key] !== undefined && values[key] !== null && String(values[key]).length)
+    .map(key => inferEventgenToken(detected, key, values[key]))
+    .filter(Boolean);
+}
+
+function randomInt(min, max){
+  const lo = Math.min(min, max), hi = Math.max(min, max);
+  return Math.floor(Math.random() * (hi - lo + 1)) + lo;
+}
+function randomIpv4(){ return [randomInt(1,254), randomInt(0,255), randomInt(0,255), randomInt(1,254)].join('.'); }
+function randomIpv6(){ return Array.from({length:8}, () => randomInt(0,65535).toString(16)).join(':'); }
+function randomMac(){ return Array.from({length:6}, () => randomInt(0,255).toString(16).padStart(2,'0')).join(':'); }
+function randomGuid(){
+  const hex = n => Array.from({length:n}, () => randomInt(0,15).toString(16)).join('');
+  return `${hex(8)}-${hex(4)}-4${hex(3)}-${(randomInt(8,11)).toString(16)}${hex(3)}-${hex(12)}`;
+}
+function randomAlphaString(len){
+  const chars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+  return Array.from({length: Math.max(1, len)}, () => chars[randomInt(0, chars.length-1)]).join('');
+}
+
+function parseEventgenListItems(inner){
+  const items = [];
+  const re = /"([^"]*)"|'([^']*)'/g;
+  let m;
+  while((m = re.exec(inner))){
+    items.push(m[1] !== undefined ? m[1] : m[2]);
+  }
+  return items;
+}
+
+function computeEventgenPreviewValue(token, index){
+  switch(token.replacementType){
+    case 'static': return token.replacement;
+    case 'timestamp': return formatStrptime(new Date(), token.replacement);
+    case 'integerid': return String(index);
+    case 'random': {
+      const r = String(token.replacement || '').trim();
+      if(r === 'ipv4') return randomIpv4();
+      if(r === 'ipv6') return randomIpv6();
+      if(r === 'mac') return randomMac();
+      if(r === 'guid') return randomGuid();
+      const floatMatch = r.match(/^float\[(-?[\d.]+):(-?[\d.]+)\]$/);
+      if(floatMatch) return (Math.random() * (Number(floatMatch[2]) - Number(floatMatch[1])) + Number(floatMatch[1])).toFixed(2);
+      const intMatch = r.match(/^integer\[(-?\d+):(-?\d+)\]$/);
+      if(intMatch) return String(randomInt(Number(intMatch[1]), Number(intMatch[2])));
+      const listMatch = r.match(/^list\[(.*)\]$/s);
+      if(listMatch){
+        const items = parseEventgenListItems(listMatch[1]);
+        return items.length ? items[randomInt(0, items.length-1)] : token.value;
+      }
+      const stringMatch = r.match(/^string\((\d+)\)$/);
+      if(stringMatch) return randomAlphaString(Number(stringMatch[1]));
+      const hexMatch = r.match(/^hex\((\d+)\)$/);
+      if(hexMatch) return Array.from({length:Number(hexMatch[1])}, () => randomInt(0,15).toString(16)).join('');
+      return token.value;
+    }
+    default: return token.value;
+  }
+}
+
+function applyEventgenToken(text, tokenRegex, replacementValue){
+  let re;
+  try { re = new RegExp(tokenRegex, 'd'); }
+  catch(e){ return {text, applied:false, error:e.message}; }
+  const m = re.exec(text);
+  if(!m || !m.indices || !m.indices[1]) return {text, applied:false};
+  const [start, end] = m.indices[1];
+  return {text: text.slice(0, start) + replacementValue + text.slice(end), applied:true};
+}
+
+function generateEventgenPreview(raw, tokens, count=3){
+  const events = [];
+  for(let i = 0; i < count; i++){
+    let text = String(raw || '');
+    tokens.forEach(t => {
+      const value = computeEventgenPreviewValue(t, i);
+      const result = applyEventgenToken(text, t.tokenRegex, value);
+      if(result.applied) text = result.text;
+    });
+    events.push(text);
+  }
+  return events;
+}
+
+function buildEventgenConfig({sampleFileName, sourcetypeName, indexName, tokens=[], interval, count, earliest, latest, outputMode}={}){
+  const stanza = String(sampleFileName || 'sample.log').trim() || 'sample.log';
+  const lines = [`[${stanza}]`];
+  lines.push(`interval = ${interval || 60}`);
+  if(count) lines.push(`count = ${count}`);
+  if(earliest) lines.push(`earliest = ${earliest}`);
+  if(latest) lines.push(`latest = ${latest}`);
+  lines.push(`outputMode = ${outputMode || 'modinput'}`);
+  if(sourcetypeName) lines.push(`sourcetype = ${sourcetypeName}`);
+  if(indexName) lines.push(`index = ${indexName}`);
+  tokens.forEach((t, i) => {
+    lines.push('');
+    lines.push(`token.${i}.token = ${t.tokenRegex}`);
+    lines.push(`token.${i}.replacementType = ${t.replacementType}`);
+    lines.push(`token.${i}.replacement = ${t.replacement}`);
+  });
+  return lines.join('\n') + '\n';
+}
+
 function buildCimFieldAliases(extracted=[]){
   const matches = REQUIRED_FIELDS
     .map(row => ({row, hits: findFields(extracted, row.names, row.id)}))
@@ -2696,6 +2850,43 @@ function timeFormatToRegex(formatText){
     i += 1;
   }
   return {pattern, unsupported};
+}
+
+function escapeRegexLiteral(str){
+  return String(str ?? '').split('').map(escapeRegexChar).join('');
+}
+
+const STRPTIME_FORMATTERS = {
+  '%Y': d => String(d.getUTCFullYear()),
+  '%y': d => String(d.getUTCFullYear()).slice(-2),
+  '%m': d => String(d.getUTCMonth()+1).padStart(2,'0'),
+  '%d': d => String(d.getUTCDate()).padStart(2,'0'),
+  '%H': d => String(d.getUTCHours()).padStart(2,'0'),
+  '%M': d => String(d.getUTCMinutes()).padStart(2,'0'),
+  '%S': d => String(d.getUTCSeconds()).padStart(2,'0'),
+  '%Q': d => String(d.getUTCMilliseconds()).padStart(3,'0'),
+  '%f': d => String(d.getUTCMilliseconds()).padStart(3,'0') + '000',
+  '%z': () => '+0000',
+  '%:z': () => '+00:00',
+  '%Z': () => 'UTC',
+  '%j': d => String(Math.ceil((d - Date.UTC(d.getUTCFullYear(),0,0)) / 86400000)).padStart(3,'0'),
+  '%s': d => String(Math.floor(d.getTime()/1000)),
+  '%%': () => '%'
+};
+
+function formatStrptime(date, pattern){
+  const text = String(pattern || '');
+  const tokens = Object.keys(STRPTIME_FORMATTERS).sort((a,b) => b.length - a.length);
+  let out = '', i = 0;
+  while(i < text.length){
+    if(text[i] === '%'){
+      const tok = tokens.find(t => text.startsWith(t, i));
+      if(tok){ out += STRPTIME_FORMATTERS[tok](date); i += tok.length; continue; }
+    }
+    out += text[i];
+    i += 1;
+  }
+  return out;
 }
 
 function validateTimeFormatAgainstSample(sample, timeFormat, timePrefix, maxLookahead){
@@ -3495,6 +3686,127 @@ function downloadLookupCsv() {
   URL.revokeObjectURL(url);
 }
 
+let eventgenTokenPlan = [];
+let lastEventgenConfig = null;
+
+function renderEventgenTokenList(tokens) {
+  const summary = $('#eventgenTokenSummary');
+  const list = $('#eventgenTokenList');
+  const generateBtn = $('#generateEventgenConfigBtn');
+  const previewBtn = $('#previewEventgenBtn');
+  if(!tokens.length){
+    renderDetection(summary, null, 'No token plan built yet', 'Paste and analyse a raw event above, then select Build token plan from raw event.');
+    list.innerHTML = '';
+    if(generateBtn) generateBtn.disabled = true;
+    if(previewBtn) previewBtn.disabled = true;
+    return;
+  }
+  renderDetection(summary, {
+    cls:'good', title:`${tokens.length} token(s) built`, confidence:'Review and adjust before generating'
+  }, '', '');
+  list.innerHTML = tokens.map((t, i) => `
+    <div class="item">
+      <strong><code>${esc(t.key)}</code>: <code>${esc(t.value)}</code></strong>
+      <span class="small">${esc(t.note)}</span>
+      <div class="grid">
+        <div>
+          <label for="eventgenType-${i}">Replacement type</label>
+          <select id="eventgenType-${i}">
+            <option value="static"${t.replacementType==='static'?' selected':''}>static (unchanged)</option>
+            <option value="random"${t.replacementType==='random'?' selected':''}>random</option>
+            <option value="timestamp"${t.replacementType==='timestamp'?' selected':''}>timestamp</option>
+            <option value="integerid"${t.replacementType==='integerid'?' selected':''}>integerid (incrementing)</option>
+          </select>
+        </div>
+        <div>
+          <label for="eventgenReplacement-${i}">Replacement value</label>
+          <input id="eventgenReplacement-${i}" value="${esc(t.replacement)}">
+        </div>
+      </div>
+    </div>
+  `).join('');
+  if(generateBtn) generateBtn.disabled = false;
+  if(previewBtn) previewBtn.disabled = false;
+}
+
+function readEventgenTokensFromDom() {
+  return eventgenTokenPlan.map((t, i) => {
+    const typeEl = $(`#eventgenType-${i}`);
+    const replEl = $(`#eventgenReplacement-${i}`);
+    return {
+      ...t,
+      replacementType: typeEl ? typeEl.value : t.replacementType,
+      replacement: replEl ? replEl.value : t.replacement
+    };
+  });
+}
+
+function buildEventgenTokensHandler() {
+  const raw = $('#sampleRawEvent').value.trim();
+  if(!raw){ renderValidationWarning($('#eventgenTokenSummary'), 'Paste a sample raw event first.'); return; }
+  const result = detectRawFormat(raw);
+  eventgenTokenPlan = buildEventgenTokenPlan(result.detected, result.values, result.extracted);
+  if(!$('#eventgenSourcetype').value) $('#eventgenSourcetype').value = suggestSourcetypeName(result.detected, result.values);
+  renderEventgenTokenList(eventgenTokenPlan);
+  lastEventgenConfig = null;
+  const downloadBtn = $('#downloadEventgenConfigBtn');
+  if(downloadBtn) downloadBtn.disabled = true;
+}
+
+function renderEventgenConfigResult(text) {
+  const box = $('#eventgenConfigResult');
+  box.innerHTML = text
+    ? `<div class="detectTitle">eventgen.conf</div><pre>${esc(text)}</pre>`
+    : `<div class="detectTitle">eventgen.conf</div><div class="detectNotes">Build a token plan, then select Generate eventgen.conf.</div>`;
+}
+
+function generateEventgenConfigHandler() {
+  if(!eventgenTokenPlan.length){ renderValidationWarning($('#eventgenTokenSummary'), 'Build a token plan first.'); return; }
+  const tokens = readEventgenTokensFromDom();
+  const text = buildEventgenConfig({
+    sampleFileName: $('#eventgenSampleFile').value,
+    sourcetypeName: $('#eventgenSourcetype').value,
+    indexName: $('#eventgenIndex').value,
+    tokens,
+    interval: $('#eventgenInterval').value,
+    count: $('#eventgenCount').value,
+    earliest: $('#eventgenEarliest').value,
+    latest: $('#eventgenLatest').value,
+    outputMode: $('#eventgenOutputMode').value
+  });
+  lastEventgenConfig = text;
+  renderEventgenConfigResult(text);
+  const downloadBtn = $('#downloadEventgenConfigBtn');
+  if(downloadBtn) downloadBtn.disabled = false;
+}
+
+function downloadEventgenConfig() {
+  if(!lastEventgenConfig) return;
+  const blob = new Blob([lastEventgenConfig], {type:'text/plain'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'eventgen.conf';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
+function renderEventgenPreview(events) {
+  const box = $('#eventgenPreviewResult');
+  box.innerHTML = events && events.length
+    ? `<div class="detectTitle">Preview (${events.length} generated events)</div>` + events.map(e => `<pre>${esc(e)}</pre>`).join('')
+    : `<div class="detectTitle">Preview (3 generated events)</div><div class="detectNotes">Build a token plan, then select Preview sample events.</div>`;
+}
+
+function previewEventgenHandler() {
+  const raw = $('#sampleRawEvent').value.trim();
+  if(!raw || !eventgenTokenPlan.length){ renderValidationWarning($('#eventgenTokenSummary'), 'Build a token plan first.'); return; }
+  const tokens = readEventgenTokensFromDom();
+  renderEventgenPreview(generateEventgenPreview(raw, tokens, 3));
+}
+
 function renderSplResult(searches) {
   const box = $('#splResult');
   if(!searches) {
@@ -3708,6 +4020,13 @@ function resetAll() {
   $('#ambiguousDateInput').value = '';
   $('#lookupFieldName').value = '';
   $('#lookupValues').value = '';
+  $('#eventgenSampleFile').value = '';
+  $('#eventgenSourcetype').value = '';
+  $('#eventgenIndex').value = '';
+  $('#eventgenInterval').value = '';
+  $('#eventgenCount').value = '';
+  $('#eventgenEarliest').value = '';
+  $('#eventgenLatest').value = '';
   renderDetection($('#timestampResult'), null, 'No timestamp detected yet', 'Paste one timestamp and select Detect timestamp.');
   renderPropsConfSuggestion(null);
   renderReverseTimeFormatResult(null);
@@ -3730,6 +4049,11 @@ function resetAll() {
   renderVolumeResult(null);
   lastLookupSkeleton = null;
   renderLookupResult(null);
+  eventgenTokenPlan = [];
+  lastEventgenConfig = null;
+  renderEventgenTokenList([]);
+  renderEventgenConfigResult(null);
+  renderEventgenPreview(null);
   resetRawEventOutputs();
 }
 
@@ -3868,6 +4192,24 @@ function init() {
     lastLookupSkeleton = null;
     renderLookupResult(null);
   });
+  $('#buildEventgenTokensBtn').addEventListener('click', buildEventgenTokensHandler);
+  $('#generateEventgenConfigBtn').addEventListener('click', generateEventgenConfigHandler);
+  $('#downloadEventgenConfigBtn').addEventListener('click', downloadEventgenConfig);
+  $('#previewEventgenBtn').addEventListener('click', previewEventgenHandler);
+  $('#clearEventgenBtn').addEventListener('click', () => {
+    $('#eventgenSampleFile').value = '';
+    $('#eventgenSourcetype').value = '';
+    $('#eventgenIndex').value = '';
+    $('#eventgenInterval').value = '';
+    $('#eventgenCount').value = '';
+    $('#eventgenEarliest').value = '';
+    $('#eventgenLatest').value = '';
+    eventgenTokenPlan = [];
+    lastEventgenConfig = null;
+    renderEventgenTokenList([]);
+    renderEventgenConfigResult(null);
+    renderEventgenPreview(null);
+  });
   initThemeToggle();
 }
 
@@ -3951,6 +4293,22 @@ if(typeof module !== 'undefined' && module.exports) {
     diffPropsConf,
     disambiguateDate,
     csvEscape,
-    buildLookupSkeleton
+    buildLookupSkeleton,
+    escapeRegexLiteral,
+    formatStrptime,
+    buildEventgenTokenRegex,
+    inferEventgenToken,
+    buildEventgenTokenPlan,
+    randomInt,
+    randomIpv4,
+    randomIpv6,
+    randomMac,
+    randomGuid,
+    randomAlphaString,
+    parseEventgenListItems,
+    computeEventgenPreviewValue,
+    applyEventgenToken,
+    generateEventgenPreview,
+    buildEventgenConfig
   };
 }
