@@ -4211,6 +4211,16 @@ function init() {
     renderEventgenPreview(null);
   });
   initThemeToggle();
+  initToolsMenu();
+}
+
+function initToolsMenu() {
+  const menu = $('#toolsMenu');
+  if(!menu) return;
+  document.addEventListener('click', e => {
+    if(menu.open && !menu.contains(e.target)) menu.removeAttribute('open');
+  });
+  menu.querySelectorAll('a').forEach(a => a.addEventListener('click', () => menu.removeAttribute('open')));
 }
 
 function initThemeToggle() {

@@ -123,6 +123,14 @@ button { border:1px solid var(--border); background:var(--surface-2); color:var(
 button:hover { border-color:var(--muted); transform:translateY(-1px); }
 .primary { background:var(--btn-primary); border-color:var(--btn-primary-border); color:var(--btn-primary-ink); }
 .ghost { background:transparent; }
+.toolsMenu { position:relative; border:none; background:transparent; border-radius:0; overflow:visible; }
+.toolsMenu summary { list-style:none; cursor:pointer; border:1px solid var(--border); background:transparent; color:var(--ink); padding:10px 13px; border-radius:11px; font-weight:700; min-height:42px; display:inline-flex; align-items:center; }
+.toolsMenu summary::-webkit-details-marker { display:none; }
+.toolsMenu summary:hover { border-color:var(--muted); }
+.toolsMenu[open] summary { border-color:var(--brand); color:var(--brand-soft); }
+.toolsMenuPanel { position:absolute; top:calc(100% + 6px); left:0; z-index:20; min-width:260px; background:var(--panel); border:1px solid var(--line); border-radius:12px; box-shadow:var(--shadow); padding:8px; display:grid; gap:4px; }
+.toolsMenuPanel a { display:block; padding:9px 11px; border-radius:8px; color:var(--ink); text-decoration:none; font-size:13px; font-weight:650; }
+.toolsMenuPanel a:hover, .toolsMenuPanel a:focus { background:var(--surface-1); color:var(--brand-soft); outline:none; }
 .detectBox { display:grid; gap:8px; background:var(--surface-1); border:1px solid var(--line); border-radius:13px; padding:12px; min-height:92px; }
 .detectBox.good { border-left:5px solid var(--good); }
 .detectBox.warn { border-left:5px solid var(--warn); }
