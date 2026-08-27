@@ -32,6 +32,12 @@
         <button class="ghost" id="copyBtn" type="button">Copy results</button>
         <button class="ghost" id="resetBtn" type="button">Reset</button>
         <button class="ghost" id="themeToggleBtn" type="button" aria-pressed="false">Light mode</button>
+        <details class="toolsMenu" id="toolsMenu">
+          <summary>Companion tools</summary>
+          <div class="toolsMenuPanel">
+            <a href="https://adamliq.github.io/Splunk_Taxonomy/#my-tools" target="_blank" rel="noopener noreferrer">Latch &mdash; SIEM Onboarding &amp; Assurance</a>
+          </div>
+        </details>
         <span id="copyStatus" class="small" aria-live="polite"></span>
       </div>
     </div>
@@ -54,6 +60,7 @@
       <a href="#props-validator">props.conf validator</a>
       <a href="#props-diff">props.conf diff</a>
       <a href="#ingestion-tools">Ingestion tools</a>
+      <a href="#eventgen-builder">Eventgen builder</a>
       <a href="#cim-compliance">CIM compliance</a>
       <a href="#volume-estimator">Volume estimator</a>
       <a href="#timestamp-reference">Timestamp reference</a>
@@ -615,6 +622,85 @@ LINE_BREAKER = ([\r\n]+)(?=\d{4}-\d{2}-\d{2})"></textarea>
             <div class="detectTitle">Lookup skeleton</div>
             <div class="detectNotes">Enter a field name and sample values, then select Generate lookup skeleton.</div>
           </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="card" id="eventgen-builder">
+      <div class="cardHead">
+        <h2>Eventgen Config Builder</h2>
+        <p>Builds a Splunk Eventgen (eventgen.conf) stanza from the current raw event sample: one token per field, with a replacement type inferred from the timestamp/IP/username detectors, plus a live preview of generated events.</p>
+      </div>
+      <div class="cardBody">
+        <div class="grid">
+          <div>
+            <label for="eventgenSampleFile">Sample file name</label>
+            <input id="eventgenSampleFile" placeholder="my_app_sample.log">
+          </div>
+          <div>
+            <label for="eventgenSourcetype">Sourcetype</label>
+            <input id="eventgenSourcetype" placeholder="custom:sourcetype">
+          </div>
+        </div>
+        <div class="grid">
+          <div>
+            <label for="eventgenIndex">Index</label>
+            <input id="eventgenIndex" placeholder="main">
+          </div>
+          <div>
+            <label for="eventgenOutputMode">Output mode</label>
+            <select id="eventgenOutputMode">
+              <option value="modinput">modinput</option>
+              <option value="file">file</option>
+              <option value="splunkstream">splunkstream</option>
+              <option value="stdout">stdout</option>
+              <option value="httpevent">httpevent</option>
+              <option value="tcpout">tcpout</option>
+              <option value="udpout">udpout</option>
+            </select>
+          </div>
+        </div>
+        <div class="columns">
+          <div>
+            <label for="eventgenInterval">Interval (seconds)</label>
+            <input id="eventgenInterval" placeholder="60">
+          </div>
+          <div>
+            <label for="eventgenCount">Count (events per interval)</label>
+            <input id="eventgenCount" placeholder="10">
+          </div>
+        </div>
+        <div class="columns">
+          <div>
+            <label for="eventgenEarliest">Earliest</label>
+            <input id="eventgenEarliest" placeholder="-5m">
+          </div>
+          <div>
+            <label for="eventgenLatest">Latest</label>
+            <input id="eventgenLatest" placeholder="now">
+          </div>
+        </div>
+        <div class="split">
+          <button class="primary" id="buildEventgenTokensBtn" type="button">Build token plan from raw event</button>
+          <button class="ghost" id="clearEventgenBtn" type="button">Clear</button>
+        </div>
+        <div id="eventgenTokenSummary" aria-live="polite" class="detectBox info">
+          <div class="detectTitle">No token plan built yet</div>
+          <div class="detectNotes">Paste and analyse a raw event above, then select Build token plan from raw event.</div>
+        </div>
+        <div id="eventgenTokenList" aria-live="polite" class="list"></div>
+        <div class="split">
+          <button class="primary" id="generateEventgenConfigBtn" type="button" disabled>Generate eventgen.conf</button>
+          <button class="ghost" id="downloadEventgenConfigBtn" type="button" disabled>Download eventgen.conf</button>
+          <button class="primary" id="previewEventgenBtn" type="button" disabled>Preview sample events</button>
+        </div>
+        <div id="eventgenConfigResult" aria-live="polite" class="propsBox">
+          <div class="detectTitle">eventgen.conf</div>
+          <div class="detectNotes">Build a token plan, then select Generate eventgen.conf.</div>
+        </div>
+        <div id="eventgenPreviewResult" aria-live="polite" class="propsBox">
+          <div class="detectTitle">Preview (3 generated events)</div>
+          <div class="detectNotes">Build a token plan, then select Preview sample events.</div>
         </div>
       </div>
     </section>
