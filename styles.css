@@ -95,6 +95,7 @@ header { border-bottom:1px solid var(--line); background:var(--panel); backdrop-
 .brand { display:flex; gap:14px; align-items:center; }
 .logo { flex:0 0 58px; width:58px; height:58px; border-radius:14px; border:1px solid var(--border); background:linear-gradient(135deg,var(--surface-1),var(--surface-2)); display:grid; place-items:center; box-shadow:0 12px 30px rgba(0,0,0,.22); }
 .logo svg { display:block; width:44px; height:44px; }
+.logoSecondary { padding:7px; box-sizing:border-box; object-fit:contain; }
 .brandText { min-width:0; }
 .brandName { display:flex; align-items:baseline; gap:10px; flex-wrap:wrap; }
 h1 { margin:0; font-size:clamp(34px,5vw,52px); letter-spacing:.02em; line-height:1; }
