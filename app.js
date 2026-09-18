@@ -4027,6 +4027,8 @@ function resetAll() {
   $('#eventgenCount').value = '';
   $('#eventgenEarliest').value = '';
   $('#eventgenLatest').value = '';
+  $('#eventgenOutputMode').value = 'modinput';
+  $('#cimModelSelect').selectedIndex = 0;
   renderDetection($('#timestampResult'), null, 'No timestamp detected yet', 'Paste one timestamp and select Detect timestamp.');
   renderPropsConfSuggestion(null);
   renderReverseTimeFormatResult(null);
@@ -4204,6 +4206,7 @@ function init() {
     $('#eventgenCount').value = '';
     $('#eventgenEarliest').value = '';
     $('#eventgenLatest').value = '';
+    $('#eventgenOutputMode').value = 'modinput';
     eventgenTokenPlan = [];
     lastEventgenConfig = null;
     renderEventgenTokenList([]);
